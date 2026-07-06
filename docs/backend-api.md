@@ -212,7 +212,7 @@ GET `/api/v1/labs/{id}/users` 返回：
 
 | 方法 | 路径 | 权限 | 说明 |
 |------|------|------|------|
-| GET | `/api/v1/users` | `system_admin` 或任意实验室的 `lab_admin` | 查询用户，支持 `?q=` `?role=` 分页 |
+| GET | `/api/v1/users` | `system_admin` 或任意实验室的 `lab_admin` | 查询用户，支持 `?q=` `?role=` `?lab_id=` 分页；`lab_admin` 只返回自己管理实验室内的成员 |
 | POST | `/api/v1/users` | `system_admin` | 创建普通用户，role 只能是 `lab_member` 或 `visitor` |
 | PATCH | `/api/v1/users/{id}` | `system_admin` | 更新普通用户资料、全局角色和启用状态 |
 

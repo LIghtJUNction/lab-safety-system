@@ -1109,38 +1109,65 @@ async fn list_users(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<User>>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    let is_admin = is_system_admin(&actor) || {
-        let has_admin_membership = sqlx::query_scalar::<_, bool>(
-            "select exists(select 1 from lab_users where user_id = $1 and lab_role = 'lab_admin')",
-        )
-        .bind(actor.id)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(false);
-        has_admin_membership
-    };
-    if !is_admin {
-        return Err(ApiError::forbidden(
-            "System administrator or laboratory administrator role required",
-        ));
+    if !is_system_admin(&actor) {
+        if let Some(lab_id) = query.lab_id {
+            require_lab_manager(&state.pool, &actor, lab_id).await?;
+        } else {
+            let has_admin_membership = sqlx::query_scalar::<_, bool>(
+                "select exists(select 1 from lab_users where user_id = $1 and lab_role = 'lab_admin')",
+            )
+            .bind(actor.id)
+            .fetch_one(&state.pool)
+            .await?;
+            if !has_admin_membership {
+                return Err(ApiError::forbidden(
+                    "System administrator or laboratory administrator role required",
+                ));
+            }
+        }
     }
     let q = wildcard(query.q);
     let users = sqlx::query_as::<_, User>(
         r#"
-        select id, username, display_name, email, role, auth_provider, department, is_active, created_at
+        select distinct users.id, users.username, users.display_name, users.email, users.role, users.auth_provider, users.department, users.is_active, users.created_at
         from users
-        where ($1::text is null or username ilike $1 or display_name ilike $1 or email ilike $1)
-          and ($2::text is null or role = $2)
-        order by created_at desc
-        limit $3 offset $4
+        left join lab_users visible_memberships on visible_memberships.user_id = users.id
+        where ($1::text is null or users.username ilike $1 or users.display_name ilike $1 or users.email ilike $1)
+          and ($2::text is null or users.role = $2)
+          and (
+            $3::boolean
+            or exists (
+              select 1
+              from lab_users managed
+              where managed.lab_id = visible_memberships.lab_id
+                and managed.user_id = $4
+                and managed.lab_role = 'lab_admin'
+            )
+          )
+          and ($5::bigint is null or visible_memberships.lab_id = $5)
+        order by users.created_at desc
+        limit $6 offset $7
         "#,
     )
     .bind(q)
     .bind(query.role)
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
     .bind(limit(query.limit))
     .bind(offset(query.offset))
     .fetch_all(&state.pool)
     .await?;
+    if !is_system_admin(&actor) && query.lab_id.is_some() && users.is_empty() {
+        let lab_exists =
+            sqlx::query_scalar::<_, bool>("select exists(select 1 from labs where id = $1)")
+                .bind(query.lab_id)
+                .fetch_one(&state.pool)
+                .await?;
+        if !lab_exists {
+            return Err(ApiError::not_found("Lab not found"));
+        }
+    }
     Ok(Json(users))
 }
 
@@ -3097,6 +3124,53 @@ mod tests {
                 .is_some_and(|items| items
                     .iter()
                     .any(|item| item["name"] == "closed" && item["count"] == 1))
+        );
+
+        let (status, _) = request(
+            &ctx.app,
+            Method::GET,
+            "/api/v1/users",
+            Some(&ctx.researcher_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, promoted_lab_admin) = json_request(
+            &ctx.app,
+            Method::POST,
+            &format!("/api/v1/labs/{}/users", lab["id"]),
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "user_id": ctx.researcher_id,
+                "lab_role": "lab_admin"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(promoted_lab_admin["lab_role"], "lab_admin");
+
+        let (status, scoped_users) = request(
+            &ctx.app,
+            Method::GET,
+            &format!("/api/v1/users?lab_id={}", lab["id"]),
+            Some(&ctx.researcher_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let scoped_users = scoped_users.as_array().expect("users array");
+        assert!(
+            scoped_users
+                .iter()
+                .any(|user| user["id"] == ctx.researcher_id)
+        );
+        assert!(
+            !scoped_users
+                .iter()
+                .any(|user| user["id"] == managed_user["id"])
         );
 
         for path in [
