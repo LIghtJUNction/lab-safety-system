@@ -1,0 +1,56 @@
+services:
+  frontend:
+    image: ${FRONTEND_IMAGE:-docker.io/lightjunction/lab-safety-system-frontend:latest}
+    ports:
+      - "${FRONTEND_PORT:-8081}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    image: ${BACKEND_IMAGE:-docker.io/lightjunction/lab-safety-system-backend:latest}
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_HOST: ${APP_HOST:-0.0.0.0}
+      APP_PORT: ${APP_PORT:-8080}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-lab_safety}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-3600}
+      UPLOAD_DIR: /app/uploads
+      SSO_ENABLED: ${SSO_ENABLED:-false}
+      OAUTH_ENABLED: ${OAUTH_ENABLED:-false}
+    volumes:
+      - backend-uploads:/app/uploads
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/lab-safety-system", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lab_safety}
+      POSTGRES_USER: ${POSTGRES_USER:-lab_safety}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  backend-uploads:
