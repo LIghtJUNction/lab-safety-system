@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use axum::{
     extract::{Multipart, Path as AxumPath, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
@@ -15,7 +15,10 @@ use uuid::Uuid;
 use crate::{
     config::Settings,
     models::*,
-    security::{create_access_token, hash_password, validate_password_strength, verify_password},
+    security::{
+        create_access_token, hash_password, validate_password_strength, verify_access_token,
+        verify_password,
+    },
 };
 
 #[derive(Clone)]
@@ -31,6 +34,20 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
+
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -92,6 +109,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/ready", get(ready))
         .route("/api/v1/auth/methods", get(auth_methods))
         .route("/api/v1/auth/password-login", post(password_login))
+        .route("/api/v1/auth/me", get(auth_me))
         .route("/api/v1/users", get(list_users).post(create_user))
         .route(
             "/api/v1/regulations",
@@ -213,12 +231,80 @@ async fn password_login(
     }))
 }
 
+async fn auth_me(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<AuthUser>, ApiError> {
+    Ok(Json(require_user(&state, &headers).await?))
+}
+
+async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<AuthUser, ApiError> {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or_else(|| ApiError::unauthorized("Missing bearer token"))?;
+    let username = verify_access_token(token, &state.settings.secret_key)
+        .map_err(|_| ApiError::unauthorized("Invalid bearer token"))?;
+    let row = sqlx::query(
+        r#"
+        select id, username, display_name, email, role, auth_provider, is_active
+        from users
+        where username = $1
+        "#,
+    )
+    .bind(&username)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(row) = row else {
+        return Err(ApiError::unauthorized("Token user no longer exists"));
+    };
+    if !row.try_get::<bool, _>("is_active")? {
+        return Err(ApiError::unauthorized("User is disabled"));
+    }
+    Ok(AuthUser {
+        id: row.try_get("id")?,
+        username: row.try_get("username")?,
+        display_name: row.try_get("display_name")?,
+        email: row.try_get("email")?,
+        role: row.try_get("role")?,
+        auth_provider: row.try_get("auth_provider")?,
+    })
+}
+
+fn is_admin(user: &AuthUser) -> bool {
+    matches!(user.role.as_str(), "admin" | "super_admin")
+}
+
+fn require_admin(user: &AuthUser) -> Result<(), ApiError> {
+    if is_admin(user) {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Administrator role required"))
+    }
+}
+
+fn ensure_self_or_admin(user: &AuthUser, target_user_id: i64) -> Result<(), ApiError> {
+    if is_admin(user) || user.id == target_user_id {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Cannot manage another user's record"))
+    }
+}
+
 async fn create_user(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<UserCreate>,
 ) -> Result<Json<User>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     if let Some(password) = payload.password.as_deref() {
         validate_password_strength(password).map_err(ApiError::bad_request)?;
+    }
+    let auth_provider = payload.auth_provider.unwrap_or_else(|| "password".into());
+    if auth_provider == "password" && payload.password.is_none() {
+        return Err(ApiError::bad_request("Password users require a password"));
     }
     let password_hash = payload.password.as_deref().map(hash_password);
     let user = sqlx::query_as::<_, User>(
@@ -232,7 +318,7 @@ async fn create_user(
     .bind(payload.display_name)
     .bind(payload.email)
     .bind(payload.role.unwrap_or_else(|| "researcher".into()))
-    .bind(payload.auth_provider.unwrap_or_else(|| "password".into()))
+    .bind(auth_provider)
     .bind(payload.department)
     .bind(password_hash)
     .fetch_one(&state.pool)
@@ -242,8 +328,11 @@ async fn create_user(
 
 async fn list_users(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<User>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     let q = wildcard(query.q);
     let users = sqlx::query_as::<_, User>(
         r#"
@@ -266,8 +355,11 @@ async fn list_users(
 
 async fn create_regulation(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<RegulationCreate>,
 ) -> Result<Json<Regulation>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     Ok(Json(sqlx::query_as::<_, Regulation>(
         r#"
         insert into regulations (title, regulation_type, issuing_authority, effective_date, summary, file_url)
@@ -287,8 +379,10 @@ async fn create_regulation(
 
 async fn list_regulations(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Regulation>>, ApiError> {
+    require_user(&state, &headers).await?;
     let rows = sqlx::query_as::<_, Regulation>(
         r#"
         select id, title, regulation_type, issuing_authority, effective_date, summary, file_url, created_at
@@ -308,8 +402,11 @@ async fn list_regulations(
 
 async fn create_incident(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<IncidentCaseCreate>,
 ) -> Result<Json<IncidentCase>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     Ok(Json(sqlx::query_as::<_, IncidentCase>(
         r#"
         insert into incident_cases (title, lab_name, occurred_on, severity, category, root_cause, corrective_actions)
@@ -330,8 +427,10 @@ async fn create_incident(
 
 async fn list_incidents(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<IncidentCase>>, ApiError> {
+    require_user(&state, &headers).await?;
     let rows = sqlx::query_as::<_, IncidentCase>(
         r#"
         select id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, created_at
@@ -351,8 +450,11 @@ async fn list_incidents(
 
 async fn create_training(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<TrainingCreate>,
 ) -> Result<Json<Training>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     Ok(Json(
         sqlx::query_as::<_, Training>(
             r#"
@@ -373,8 +475,10 @@ async fn create_training(
 
 async fn list_trainings(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Training>>, ApiError> {
+    require_user(&state, &headers).await?;
     let rows = sqlx::query_as::<_, Training>(
         "select id, title, target_role, status, starts_on, exam_required_score, created_at from trainings where ($1::text is null or status = $1) order by created_at desc limit $2 offset $3",
     )
@@ -388,8 +492,11 @@ async fn list_trainings(
 
 async fn create_exam_result(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<ExamResultCreate>,
 ) -> Result<Json<ExamResult>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    ensure_self_or_admin(&actor, payload.user_id)?;
     Ok(Json(sqlx::query_as::<_, ExamResult>(
         "insert into exam_results (training_id, user_id, score, status) values ($1, $2, $3, $4) returning id, training_id, user_id, score, status, created_at",
     )
@@ -403,18 +510,33 @@ async fn create_exam_result(
 
 async fn list_exam_results(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<ExamResult>>, ApiError> {
-    Ok(Json(sqlx::query_as::<_, ExamResult>(
-        "select id, training_id, user_id, score, status, created_at from exam_results order by created_at desc",
-    )
-    .fetch_all(&state.pool)
-    .await?))
+    let actor = require_user(&state, &headers).await?;
+    let rows = if is_admin(&actor) {
+        sqlx::query_as::<_, ExamResult>(
+            "select id, training_id, user_id, score, status, created_at from exam_results order by created_at desc",
+        )
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, ExamResult>(
+            "select id, training_id, user_id, score, status, created_at from exam_results where user_id = $1 order by created_at desc",
+        )
+        .bind(actor.id)
+        .fetch_all(&state.pool)
+        .await?
+    };
+    Ok(Json(rows))
 }
 
 async fn create_equipment(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<EquipmentCreate>,
 ) -> Result<Json<Equipment>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     Ok(Json(
         sqlx::query_as::<_, Equipment>(
             r#"
@@ -435,8 +557,10 @@ async fn create_equipment(
 
 async fn list_equipment(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Equipment>>, ApiError> {
+    require_user(&state, &headers).await?;
     let rows = sqlx::query_as::<_, Equipment>(
         r#"
         select id, asset_code, name, lab_name, status, owner, created_at
@@ -458,8 +582,11 @@ async fn list_equipment(
 
 async fn create_booking(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<EquipmentBookingCreate>,
 ) -> Result<Json<EquipmentBooking>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    ensure_self_or_admin(&actor, payload.user_id)?;
     if payload.ends_at <= payload.starts_at {
         return Err(ApiError::bad_request(
             "Booking end time must be later than start time",
@@ -492,18 +619,33 @@ async fn create_booking(
 
 async fn list_bookings(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<EquipmentBooking>>, ApiError> {
-    Ok(Json(sqlx::query_as::<_, EquipmentBooking>(
-        "select id, equipment_id, user_id, starts_at, ends_at, purpose, created_at from equipment_bookings order by starts_at desc",
-    )
-    .fetch_all(&state.pool)
-    .await?))
+    let actor = require_user(&state, &headers).await?;
+    let rows = if is_admin(&actor) {
+        sqlx::query_as::<_, EquipmentBooking>(
+            "select id, equipment_id, user_id, starts_at, ends_at, purpose, created_at from equipment_bookings order by starts_at desc",
+        )
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, EquipmentBooking>(
+            "select id, equipment_id, user_id, starts_at, ends_at, purpose, created_at from equipment_bookings where user_id = $1 order by starts_at desc",
+        )
+        .bind(actor.id)
+        .fetch_all(&state.pool)
+        .await?
+    };
+    Ok(Json(rows))
 }
 
 async fn create_repair(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<RepairTicketCreate>,
 ) -> Result<Json<RepairTicket>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    ensure_self_or_admin(&actor, payload.reported_by)?;
     Ok(Json(sqlx::query_as::<_, RepairTicket>(
         "insert into repair_tickets (equipment_id, reported_by, description, status) values ($1, $2, $3, $4) returning id, equipment_id, reported_by, description, status, created_at",
     )
@@ -517,19 +659,34 @@ async fn create_repair(
 
 async fn list_repairs(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<RepairTicket>>, ApiError> {
-    Ok(Json(sqlx::query_as::<_, RepairTicket>(
-        "select id, equipment_id, reported_by, description, status, created_at from repair_tickets order by created_at desc",
-    )
-    .fetch_all(&state.pool)
-    .await?))
+    let actor = require_user(&state, &headers).await?;
+    let rows = if is_admin(&actor) {
+        sqlx::query_as::<_, RepairTicket>(
+            "select id, equipment_id, reported_by, description, status, created_at from repair_tickets order by created_at desc",
+        )
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, RepairTicket>(
+            "select id, equipment_id, reported_by, description, status, created_at from repair_tickets where reported_by = $1 order by created_at desc",
+        )
+        .bind(actor.id)
+        .fetch_all(&state.pool)
+        .await?
+    };
+    Ok(Json(rows))
 }
 
 async fn update_repair(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
     Json(payload): Json<RepairTicketUpdate>,
 ) -> Result<Json<RepairTicket>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     let row = sqlx::query_as::<_, RepairTicket>(
         "update repair_tickets set status = $1, updated_at = now() where id = $2 returning id, equipment_id, reported_by, description, status, created_at",
     )
@@ -543,8 +700,11 @@ async fn update_repair(
 
 async fn create_hazard(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<SafetyHazardCreate>,
 ) -> Result<Json<SafetyHazard>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    ensure_self_or_admin(&actor, payload.reported_by)?;
     Ok(Json(sqlx::query_as::<_, SafetyHazard>(
         r#"
         insert into safety_hazards (title, lab_name, category, description, reported_by, issue_photo_url)
@@ -564,8 +724,15 @@ async fn create_hazard(
 
 async fn list_hazards(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<SafetyHazard>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    let user_scope = if is_admin(&actor) {
+        None
+    } else {
+        Some(actor.id)
+    };
     let rows = sqlx::query_as::<_, SafetyHazard>(
         r#"
         select id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
@@ -574,14 +741,16 @@ async fn list_hazards(
           and ($2::text is null or status = $2)
           and ($3::bigint is null or responsible_user_id = $3)
           and ($4::bigint is null or reported_by = $4)
+          and ($5::bigint is null or reported_by = $5 or responsible_user_id = $5)
         order by created_at desc
-        limit $5 offset $6
+        limit $6 offset $7
         "#,
     )
     .bind(wildcard(query.q))
     .bind(query.status)
     .bind(query.responsible_user_id)
     .bind(query.reported_by)
+    .bind(user_scope)
     .bind(limit(query.limit))
     .bind(offset(query.offset))
     .fetch_all(&state.pool)
@@ -591,9 +760,12 @@ async fn list_hazards(
 
 async fn claim_hazard(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
     Json(payload): Json<SafetyHazardClaim>,
 ) -> Result<Json<SafetyHazard>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    ensure_self_or_admin(&actor, payload.responsible_user_id)?;
     let row = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards set responsible_user_id = $1, status = 'claimed', updated_at = now()
@@ -611,20 +783,25 @@ async fn claim_hazard(
 
 async fn remediate_hazard(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
     Json(payload): Json<SafetyHazardRemediation>,
 ) -> Result<Json<SafetyHazard>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
     let row = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards
         set remediation_photo_url = $1, remediation_note = $2, status = 'remediation_submitted', updated_at = now()
         where id = $3 and responsible_user_id is not null
+          and ($4::boolean or responsible_user_id = $5)
         returning id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
     .bind(payload.remediation_photo_url)
     .bind(payload.remediation_note)
     .bind(id)
+    .bind(is_admin(&actor))
+    .bind(actor.id)
     .fetch_optional(&state.pool)
     .await?;
     row.map(Json)
@@ -633,9 +810,12 @@ async fn remediate_hazard(
 
 async fn update_hazard_status(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     AxumPath(id): AxumPath<i64>,
     Json(payload): Json<SafetyHazardStatusUpdate>,
 ) -> Result<Json<SafetyHazard>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     let row = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards set status = $1, updated_at = now()
@@ -653,7 +833,9 @@ async fn update_hazard_status(
 
 async fn dashboard_stats(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<DashboardStats>, ApiError> {
+    require_user(&state, &headers).await?;
     let total: i64 = sqlx::query("select count(*)::bigint as count from exam_results")
         .fetch_one(&state.pool)
         .await?
@@ -684,7 +866,9 @@ async fn dashboard_stats(
 
 async fn incident_analytics(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<IncidentAnalytics>, ApiError> {
+    require_user(&state, &headers).await?;
     Ok(Json(IncidentAnalytics {
         by_category: count_buckets(&state.pool, "select category as name, count(*)::bigint as count from incident_cases group by category order by count desc").await?,
         by_severity: count_buckets(&state.pool, "select severity as name, count(*)::bigint as count from incident_cases group by severity order by count desc").await?,
@@ -693,17 +877,29 @@ async fn incident_analytics(
 
 async fn hazard_analytics(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Result<Json<HazardAnalytics>, ApiError> {
-    Ok(Json(HazardAnalytics {
-        by_status: count_buckets(&state.pool, "select status as name, count(*)::bigint as count from safety_hazards group by status order by count desc").await?,
-        by_category: count_buckets(&state.pool, "select category as name, count(*)::bigint as count from safety_hazards group by category order by count desc").await?,
-    }))
+    let actor = require_user(&state, &headers).await?;
+    if is_admin(&actor) {
+        Ok(Json(HazardAnalytics {
+            by_status: count_buckets(&state.pool, "select status as name, count(*)::bigint as count from safety_hazards group by status order by count desc").await?,
+            by_category: count_buckets(&state.pool, "select category as name, count(*)::bigint as count from safety_hazards group by category order by count desc").await?,
+        }))
+    } else {
+        Ok(Json(HazardAnalytics {
+            by_status: count_buckets_for_user(&state.pool, "status", actor.id).await?,
+            by_category: count_buckets_for_user(&state.pool, "category", actor.id).await?,
+        }))
+    }
 }
 
 async fn upload_regulation_file(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<Json<UploadedFile>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     save_upload(&state, multipart, "regulations")
         .await
         .map(Json)
@@ -711,15 +907,20 @@ async fn upload_regulation_file(
 
 async fn upload_incident_file(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<Json<UploadedFile>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
     save_upload(&state, multipart, "incidents").await.map(Json)
 }
 
 async fn upload_hazard_issue_photo(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<Json<UploadedFile>, ApiError> {
+    require_user(&state, &headers).await?;
     save_upload(&state, multipart, "hazards/issue")
         .await
         .map(Json)
@@ -727,8 +928,10 @@ async fn upload_hazard_issue_photo(
 
 async fn upload_hazard_remediation_photo(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Result<Json<UploadedFile>, ApiError> {
+    require_user(&state, &headers).await?;
     save_upload(&state, multipart, "hazards/remediation")
         .await
         .map(Json)
@@ -763,6 +966,30 @@ async fn save_upload(
 
 async fn count_buckets(pool: &PgPool, sql: &str) -> Result<Vec<CountBucket>, ApiError> {
     let rows = sqlx::query(sql).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| CountBucket {
+            name: row.get("name"),
+            count: row.get("count"),
+        })
+        .collect())
+}
+
+async fn count_buckets_for_user(
+    pool: &PgPool,
+    column: &'static str,
+    user_id: i64,
+) -> Result<Vec<CountBucket>, ApiError> {
+    let sql = match column {
+        "status" => {
+            "select status as name, count(*)::bigint as count from safety_hazards where reported_by = $1 or responsible_user_id = $1 group by status order by count desc"
+        }
+        "category" => {
+            "select category as name, count(*)::bigint as count from safety_hazards where reported_by = $1 or responsible_user_id = $1 group by category order by count desc"
+        }
+        _ => return Err(ApiError::bad_request("Unsupported analytics column")),
+    };
+    let rows = sqlx::query(sql).bind(user_id).fetch_all(pool).await?;
     Ok(rows
         .into_iter()
         .map(|row| CountBucket {

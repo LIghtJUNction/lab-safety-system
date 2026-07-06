@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
 use rand::{distributions::Alphanumeric, Rng};
+use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
 
@@ -66,6 +67,29 @@ pub fn create_access_token(
     Ok(format!("{body}.{signature}"))
 }
 
+pub fn verify_access_token(token: &str, secret: &str) -> anyhow::Result<String> {
+    let Some((body, signature)) = token.split_once('.') else {
+        anyhow::bail!("Invalid token");
+    };
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
+    mac.update(body.as_bytes());
+    let expected = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    if expected != signature {
+        anyhow::bail!("Invalid token signature");
+    }
+    let payload: TokenPayload = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(body)?)?;
+    if payload.exp < chrono::Utc::now().timestamp() {
+        anyhow::bail!("Token expired");
+    }
+    Ok(payload.sub)
+}
+
+#[derive(Deserialize)]
+struct TokenPayload {
+    sub: String,
+    exp: i64,
+}
+
 fn hex(bytes: &[u8]) -> String {
     let mut value = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -76,7 +100,10 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hash_password, validate_password_strength, verify_password};
+    use super::{
+        create_access_token, hash_password, validate_password_strength, verify_access_token,
+        verify_password,
+    };
 
     #[test]
     fn password_hash_round_trips() {
@@ -90,5 +117,12 @@ mod tests {
         assert!(validate_password_strength("weak").is_err());
         assert!(validate_password_strength("longbutnosymbol1A").is_err());
         assert!(validate_password_strength("StrongPassw0rd!").is_ok());
+    }
+
+    #[test]
+    fn access_token_round_trips_and_rejects_wrong_secret() {
+        let token = create_access_token("admin", "secret-a", 60).unwrap();
+        assert_eq!(verify_access_token(&token, "secret-a").unwrap(), "admin");
+        assert!(verify_access_token(&token, "secret-b").is_err());
     }
 }
