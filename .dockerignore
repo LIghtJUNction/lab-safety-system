@@ -1,5 +1,10 @@
 .git
 .gitmodules
+.venv
+.pytest_cache
+__pycache__
+*.egg-info
+*.pyc
 frontend/.git
 frontend/node_modules
 frontend/dist

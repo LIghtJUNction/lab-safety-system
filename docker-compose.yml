@@ -8,7 +8,7 @@ services:
       APP_ENV: ${APP_ENV:-production}
       APP_HOST: ${APP_HOST:-0.0.0.0}
       APP_PORT: ${APP_PORT:-8080}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-lab_safety}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-lab_safety}
     ports:
       - "${APP_PORT:-8080}:8080"
     depends_on:
