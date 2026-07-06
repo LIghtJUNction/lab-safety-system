@@ -238,9 +238,15 @@ lab-safety-system users set-password \
   --actor-password '超级管理员强密码' \
   --username researcher01 \
   --password '请替换为新的强密码，例如 ResearcherPass2027!'
+
+lab-safety-system users set-password \
+  --actor admin \
+  --actor-password '超级管理员强密码' \
+  --username admin \
+  --generate-password true
 ```
 
-密码策略：至少 12 位，并包含小写字母、大写字母、数字和符号。弱密码会被后端和命令行工具拒绝。
+密码策略：至少 12 位，并包含小写字母、大写字母、数字和符号。弱密码会被后端和命令行工具拒绝。已保存的密码不会以明文取回；如需重新获取管理员可用密码，请在服务器终端执行 `set-password --generate-password true`，命令会生成强密码并立即重置目标用户密码。
 
 支持角色：
 

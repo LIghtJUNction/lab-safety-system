@@ -5,7 +5,9 @@ use sqlx::{PgPool, Row};
 
 use crate::{
     config::Settings,
-    security::{hash_password, validate_password_strength, verify_password},
+    security::{
+        generate_strong_password, hash_password, validate_password_strength, verify_password,
+    },
 };
 
 pub async fn try_run(args: Vec<String>) -> anyhow::Result<bool> {
@@ -35,8 +37,9 @@ fn print_usage() {
         "Usage:
   lab-safety-system users bootstrap-super-admin --username USER --password PASS --email EMAIL [--display-name NAME]
   lab-safety-system users create --actor USER --actor-password PASS --username USER --password PASS --email EMAIL --role ROLE [--display-name NAME] [--department NAME]
-  lab-safety-system users list --actor USER --actor-password PASS
-  lab-safety-system users set-password --actor USER --actor-password PASS --username USER --password PASS
+lab-safety-system users list --actor USER --actor-password PASS
+lab-safety-system users set-password --actor USER --actor-password PASS --username USER --password PASS
+lab-safety-system users set-password --actor USER --actor-password PASS --username USER --generate-password true
 
 Roles: super_admin, admin, researcher"
     );
@@ -62,6 +65,13 @@ fn required(flags: &HashMap<String, String>, key: &str) -> anyhow::Result<String
         .filter(|value| !value.trim().is_empty())
         .cloned()
         .with_context(|| format!("Missing --{key}"))
+}
+
+fn flag_enabled(flags: &HashMap<String, String>, key: &str) -> bool {
+    matches!(
+        flags.get(key).map(String::as_str),
+        Some("true" | "1" | "yes" | "on")
+    )
 }
 
 async fn bootstrap_super_admin(
@@ -151,7 +161,12 @@ async fn list_users(pool: &PgPool, flags: HashMap<String, String>) -> anyhow::Re
 async fn set_password(pool: &PgPool, flags: HashMap<String, String>) -> anyhow::Result<()> {
     require_super_admin(pool, &flags).await?;
     let username = required(&flags, "username")?;
-    let password = required(&flags, "password")?;
+    let generated = flag_enabled(&flags, "generate-password");
+    let password = if generated {
+        generate_strong_password()
+    } else {
+        required(&flags, "password")?
+    };
     validate_password_strength(&password).map_err(anyhow::Error::msg)?;
     let result = sqlx::query(
         "update users set password_hash = $1, auth_provider = 'password', updated_at = now() where username = $2",
@@ -164,6 +179,9 @@ async fn set_password(pool: &PgPool, flags: HashMap<String, String>) -> anyhow::
         bail!("User not found: {username}");
     }
     println!("Updated password for user: {username}");
+    if generated {
+        println!("Generated password: {password}");
+    }
     Ok(())
 }
 

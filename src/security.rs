@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{distributions::Alphanumeric, seq::SliceRandom, Rng};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
@@ -36,6 +36,28 @@ pub fn validate_password_strength(password: &str) -> Result<(), String> {
         return Err("Password must contain a symbol".into());
     }
     Ok(())
+}
+
+pub fn generate_strong_password() -> String {
+    let lowercase = b"abcdefghijkmnopqrstuvwxyz";
+    let uppercase = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+    let digits = b"23456789";
+    let symbols = b"!@#$%^&*_-+=";
+    let all = b"abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*_-+=";
+    let mut rng = rand::thread_rng();
+    let mut password = vec![
+        *lowercase
+            .choose(&mut rng)
+            .expect("lowercase set is not empty"),
+        *uppercase
+            .choose(&mut rng)
+            .expect("uppercase set is not empty"),
+        *digits.choose(&mut rng).expect("digit set is not empty"),
+        *symbols.choose(&mut rng).expect("symbol set is not empty"),
+    ];
+    password.extend((0..20).map(|_| *all.choose(&mut rng).expect("password set is not empty")));
+    password.shuffle(&mut rng);
+    String::from_utf8(password).expect("password alphabet is ascii")
 }
 
 pub fn verify_password(password: &str, stored: Option<&str>) -> bool {
@@ -114,8 +136,8 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_access_token, hash_password, sign_message, validate_password_strength,
-        verify_access_token, verify_message_signature, verify_password,
+        create_access_token, generate_strong_password, hash_password, sign_message,
+        validate_password_strength, verify_access_token, verify_message_signature, verify_password,
     };
 
     #[test]
@@ -130,6 +152,13 @@ mod tests {
         assert!(validate_password_strength("weak").is_err());
         assert!(validate_password_strength("longbutnosymbol1A").is_err());
         assert!(validate_password_strength("StrongPassw0rd!").is_ok());
+    }
+
+    #[test]
+    fn generated_password_is_strong() {
+        for _ in 0..20 {
+            assert!(validate_password_strength(&generate_strong_password()).is_ok());
+        }
     }
 
     #[test]
