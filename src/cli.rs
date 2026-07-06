@@ -35,6 +35,7 @@ pub async fn try_run(args: Vec<String>) -> anyhow::Result<bool> {
 fn print_usage() {
     eprintln!(
         "Usage:
+  lab-safety-system users bootstrap-super-admin --generate-password true [--username USER] [--email EMAIL] [--display-name NAME]
   lab-safety-system users bootstrap-super-admin --username USER --password PASS --email EMAIL [--display-name NAME]
   lab-safety-system users create --actor USER --actor-password PASS --username USER --password PASS --email EMAIL --role ROLE [--display-name NAME] [--department NAME]
 lab-safety-system users list --actor USER --actor-password PASS
@@ -87,10 +88,23 @@ async fn bootstrap_super_admin(
         bail!("Super admin already exists; use an existing super admin for user management");
     }
 
-    let username = required(&flags, "username")?;
-    let password = required(&flags, "password")?;
+    let generated = flag_enabled(&flags, "generate-password");
+    let username = flags
+        .get("username")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| "admin".to_string());
+    let password = if generated {
+        generate_strong_password()
+    } else {
+        required(&flags, "password")?
+    };
     validate_password_strength(&password).map_err(anyhow::Error::msg)?;
-    let email = required(&flags, "email")?;
+    let email = flags
+        .get("email")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| "admin@example.local".to_string());
     let display_name = flags
         .get("display-name")
         .cloned()
@@ -107,6 +121,9 @@ async fn bootstrap_super_admin(
     )
     .await?;
     println!("Created super admin: {username}");
+    if generated {
+        println!("Generated password: {password}");
+    }
     Ok(())
 }
 
