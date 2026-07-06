@@ -1843,6 +1843,58 @@ mod tests {
         .await?;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
+        let managed_username = format!("managed_{}", ctx.schema);
+        let (status, _) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/users",
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "username": managed_username,
+                "display_name": "Managed Researcher",
+                "email": format!("{}@example.com", ctx.schema),
+                "role": "researcher",
+                "auth_provider": "password",
+                "department": "公共实验平台",
+                "password": "weak"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (status, managed_user) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/users",
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "username": managed_username,
+                "display_name": "Managed Researcher",
+                "email": format!("{}@example.com", ctx.schema),
+                "role": "researcher",
+                "auth_provider": "password",
+                "department": "公共实验平台",
+                "password": "ManagedStrong123!"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(managed_user["role"], "researcher");
+
+        let (status, users) = request(
+            &ctx.app,
+            Method::GET,
+            "/api/v1/users?role=researcher",
+            Some(&ctx.admin_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(users.as_array().is_some_and(|items| items
+            .iter()
+            .any(|user| user["username"] == managed_user["username"])));
+
         let (status, regulation_upload) = upload(
             &ctx.app,
             "/api/v1/regulations/upload",
