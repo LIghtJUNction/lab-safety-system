@@ -261,7 +261,7 @@ lab-safety-system users set-password \
 ```bash
 cd frontend
 npm run build
-E2E_BASE_URL=http://127.0.0.1:5174 \
+E2E_BASE_URL=http://localhost:5174 \
 E2E_ADMIN_USER=cli_super \
 E2E_ADMIN_PASSWORD='StrongerAdmin123!' \
 E2E_FEDERATED_SECRET='federated-local-secret' \
