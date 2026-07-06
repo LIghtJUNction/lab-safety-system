@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use sqlx::{PgPool, Row};
 
 use crate::{

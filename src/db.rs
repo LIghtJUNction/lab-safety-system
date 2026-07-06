@@ -1,8 +1,11 @@
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use std::time::Duration;
+
+use sqlx::{PgPool, postgres::PgPoolOptions};
 
 pub async fn connect(database_url: &str) -> anyhow::Result<PgPool> {
     Ok(PgPoolOptions::new()
         .max_connections(10)
+        .acquire_timeout(Duration::from_secs(8))
         .connect(database_url)
         .await?)
 }

@@ -3,4 +3,4 @@
 	url = https://github.com/LIghtJUNction/lab-safety-system-frontend.git
 [submodule "packaging/aur/lab-safety-system-git"]
 	path = packaging/aur/lab-safety-system-git
-	url = ssh://aur@aur.archlinux.org/lab-safety-system-git.git
+	url = https://aur.archlinux.org/lab-safety-system-git.git

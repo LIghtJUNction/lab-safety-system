@@ -236,7 +236,20 @@ paru -S lab-safety-system-git
 - `/usr/share/lab-safety-system/public`
 - `/var/lib/lab-safety-system/uploads`
 
-先编辑环境文件：
+配置目录是 `/etc/lab-safety-system/`。主要配置文件是：
+
+```text
+/etc/lab-safety-system/lab-safety-system.env
+```
+
+先准备本机 PostgreSQL 数据库。示例会创建 `lab_safety` 用户和 `lab_safety` 数据库，密码必须使用强密码：
+
+```bash
+sudo -u postgres createuser --pwprompt lab_safety
+sudo -u postgres createdb -O lab_safety lab_safety
+```
+
+然后编辑环境文件：
 
 ```bash
 sudoedit /etc/lab-safety-system/lab-safety-system.env
@@ -248,6 +261,12 @@ sudoedit /etc/lab-safety-system/lab-safety-system.env
 DATABASE_URL=postgresql://lab_safety:数据库密码@127.0.0.1:5432/lab_safety
 SECRET_KEY=使用 openssl rand -hex 32 生成
 WEBAUTHN_ORIGIN=http://localhost:8080
+```
+
+`DATABASE_URL` 格式是：
+
+```text
+postgresql://用户名:密码@数据库主机:端口/数据库名
 ```
 
 启用服务：

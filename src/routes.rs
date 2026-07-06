@@ -1,13 +1,13 @@
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use axum::{
+    Json, Router,
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, patch, post},
-    Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use tokio::{fs, sync::Mutex};
@@ -1622,10 +1622,10 @@ fn offset(value: Option<i64>) -> i64 {
 mod tests {
     use super::*;
     use axum::{
-        body::{to_bytes, Body},
-        http::{header, Method, Request},
+        body::{Body, to_bytes},
+        http::{Method, Request, header},
     };
-    use sqlx::{postgres::PgPoolOptions, Executor};
+    use sqlx::{Executor, postgres::PgPoolOptions};
     use tower::ServiceExt;
 
     use crate::{db, security::hash_password};
@@ -1891,9 +1891,11 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
-        assert!(users.as_array().is_some_and(|items| items
-            .iter()
-            .any(|user| user["username"] == managed_user["username"])));
+        assert!(users.as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|user| user["username"] == managed_user["username"])
+        }));
 
         let (status, regulation_upload) = upload(
             &ctx.app,
@@ -1904,9 +1906,11 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
-        assert!(regulation_upload["url"]
-            .as_str()
-            .is_some_and(|url| url.starts_with("/uploads/regulations/")));
+        assert!(
+            regulation_upload["url"]
+                .as_str()
+                .is_some_and(|url| url.starts_with("/uploads/regulations/"))
+        );
 
         let (status, regulation) = json_request(
             &ctx.app,
