@@ -31,6 +31,8 @@ def test_dashboard_stats_empty() -> None:
     response = client.get("/api/v1/analytics/dashboard")
     assert response.status_code == 200
     assert response.json()["regulation_count"] == 0
+    ready = client.get("/api/v1/ready")
+    assert ready.status_code == 200
 
 
 def test_create_and_query_core_records() -> None:
@@ -79,6 +81,44 @@ def test_create_and_query_core_records() -> None:
     stats = client.get("/api/v1/analytics/dashboard").json()
     assert stats["regulation_count"] == 1
     assert stats["incident_count"] == 1
+
+    analytics = client.get("/api/v1/analytics/incidents").json()
+    assert analytics["by_category"][0]["name"] == "危化品"
+
+
+def test_equipment_booking_conflict_and_repair_update() -> None:
+    client = build_client()
+    user = client.post(
+        "/api/v1/users",
+        json={
+            "username": "lab-user",
+            "display_name": "实验员",
+            "email": "user@example.com",
+            "role": "researcher",
+        },
+    ).json()
+    equipment = client.post(
+        "/api/v1/equipment",
+        json={"asset_code": "EQ-001", "name": "气相色谱仪", "lab_name": "分析测试中心"},
+    ).json()
+
+    booking_payload = {
+        "equipment_id": equipment["id"],
+        "user_id": user["id"],
+        "starts_at": "2026-07-08T09:00:00Z",
+        "ends_at": "2026-07-08T11:00:00Z",
+        "purpose": "样品分析",
+    }
+    assert client.post("/api/v1/equipment-bookings", json=booking_payload).status_code == 200
+    assert client.post("/api/v1/equipment-bookings", json=booking_payload).status_code == 409
+
+    ticket = client.post(
+        "/api/v1/repair-tickets",
+        json={"equipment_id": equipment["id"], "reported_by": user["id"], "description": "风扇异响"},
+    ).json()
+    updated = client.patch(f"/api/v1/repair-tickets/{ticket['id']}", json={"status": "resolved"})
+    assert updated.status_code == 200
+    assert updated.json()["status"] == "resolved"
 
 
 def test_upload_regulation_file(tmp_path, monkeypatch) -> None:

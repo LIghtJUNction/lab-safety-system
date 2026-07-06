@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -23,6 +23,7 @@ from app.models import (
 from app.schemas import (
     AuthMethods,
     AuthToken,
+    CountBucket,
     DashboardStats,
     EquipmentBookingCreate,
     EquipmentBookingRead,
@@ -32,13 +33,16 @@ from app.schemas import (
     ExamResultRead,
     IncidentCaseCreate,
     IncidentCaseRead,
+    IncidentAnalytics,
     PasswordLogin,
     RegulationCreate,
     RegulationRead,
     RepairTicketCreate,
     RepairTicketRead,
+    RepairTicketUpdate,
     TrainingCreate,
     TrainingRead,
+    TrainingResultSummary,
     UserCreate,
     UserRead,
     UploadedFile,
@@ -57,9 +61,19 @@ def add_record(db: Session, record: ModelT) -> ModelT:
     return record
 
 
+def page_bounds(limit: int, offset: int) -> tuple[int, int]:
+    return min(max(limit, 1), 100), max(offset, 0)
+
+
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/ready")
+def ready(db: Session = Depends(get_db)) -> dict[str, str]:
+    db.execute(text("select 1"))
+    return {"status": "ready"}
 
 
 @router.get("/auth/methods", response_model=AuthMethods)
@@ -84,8 +98,20 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)) -> User:
 
 
 @router.get("/users", response_model=list[UserRead])
-def list_users(db: Session = Depends(get_db)) -> list[User]:
-    return list(db.scalars(select(User).order_by(User.created_at.desc())))
+def list_users(
+    q: str | None = Query(default=None),
+    role: str | None = Query(default=None),
+    limit: int = Query(default=50),
+    offset: int = Query(default=0),
+    db: Session = Depends(get_db),
+) -> list[User]:
+    limit, offset = page_bounds(limit, offset)
+    stmt = select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+    if q:
+        stmt = stmt.where(or_(User.username.ilike(f"%{q}%"), User.display_name.ilike(f"%{q}%"), User.email.ilike(f"%{q}%")))
+    if role:
+        stmt = stmt.where(User.role == role)
+    return list(db.scalars(stmt))
 
 
 @router.post("/regulations", response_model=RegulationRead)
@@ -94,10 +120,19 @@ def create_regulation(payload: RegulationCreate, db: Session = Depends(get_db)) 
 
 
 @router.get("/regulations", response_model=list[RegulationRead])
-def list_regulations(q: str | None = Query(default=None), db: Session = Depends(get_db)) -> list[Regulation]:
-    stmt = select(Regulation).order_by(Regulation.created_at.desc())
+def list_regulations(
+    q: str | None = Query(default=None),
+    regulation_type: str | None = Query(default=None),
+    limit: int = Query(default=50),
+    offset: int = Query(default=0),
+    db: Session = Depends(get_db),
+) -> list[Regulation]:
+    limit, offset = page_bounds(limit, offset)
+    stmt = select(Regulation).order_by(Regulation.created_at.desc()).limit(limit).offset(offset)
     if q:
         stmt = stmt.where(Regulation.title.ilike(f"%{q}%"))
+    if regulation_type:
+        stmt = stmt.where(Regulation.regulation_type == regulation_type)
     return list(db.scalars(stmt))
 
 
@@ -112,10 +147,22 @@ def create_incident(payload: IncidentCaseCreate, db: Session = Depends(get_db)) 
 
 
 @router.get("/incidents", response_model=list[IncidentCaseRead])
-def list_incidents(q: str | None = Query(default=None), db: Session = Depends(get_db)) -> list[IncidentCase]:
-    stmt = select(IncidentCase).order_by(IncidentCase.occurred_on.desc())
+def list_incidents(
+    q: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    limit: int = Query(default=50),
+    offset: int = Query(default=0),
+    db: Session = Depends(get_db),
+) -> list[IncidentCase]:
+    limit, offset = page_bounds(limit, offset)
+    stmt = select(IncidentCase).order_by(IncidentCase.occurred_on.desc()).limit(limit).offset(offset)
     if q:
         stmt = stmt.where(IncidentCase.title.ilike(f"%{q}%"))
+    if severity:
+        stmt = stmt.where(IncidentCase.severity == severity)
+    if category:
+        stmt = stmt.where(IncidentCase.category == category)
     return list(db.scalars(stmt))
 
 
@@ -130,8 +177,17 @@ def create_training(payload: TrainingCreate, db: Session = Depends(get_db)) -> T
 
 
 @router.get("/trainings", response_model=list[TrainingRead])
-def list_trainings(db: Session = Depends(get_db)) -> list[Training]:
-    return list(db.scalars(select(Training).order_by(Training.created_at.desc())))
+def list_trainings(
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50),
+    offset: int = Query(default=0),
+    db: Session = Depends(get_db),
+) -> list[Training]:
+    limit, offset = page_bounds(limit, offset)
+    stmt = select(Training).order_by(Training.created_at.desc()).limit(limit).offset(offset)
+    if status:
+        stmt = stmt.where(Training.status == status)
+    return list(db.scalars(stmt))
 
 
 @router.post("/exam-results", response_model=ExamResultRead)
@@ -144,21 +200,75 @@ def list_exam_results(db: Session = Depends(get_db)) -> list[ExamResult]:
     return list(db.scalars(select(ExamResult).order_by(ExamResult.created_at.desc())))
 
 
+@router.get("/trainings/results-summary", response_model=list[TrainingResultSummary])
+def training_results_summary(db: Session = Depends(get_db)) -> list[TrainingResultSummary]:
+    trainings = db.scalars(select(Training).order_by(Training.created_at.desc())).all()
+    summaries: list[TrainingResultSummary] = []
+    for training in trainings:
+        counts = dict(
+            db.execute(
+                select(ExamResult.status, func.count())
+                .where(ExamResult.training_id == training.id)
+                .group_by(ExamResult.status)
+            ).all()
+        )
+        passed = counts.get(ExamResultStatus.passed, 0)
+        failed = counts.get(ExamResultStatus.failed, 0)
+        pending = counts.get(ExamResultStatus.pending, 0)
+        total = passed + failed + pending
+        summaries.append(
+            TrainingResultSummary(
+                training_id=training.id,
+                title=training.title,
+                passed=passed,
+                failed=failed,
+                pending=pending,
+                pass_rate=round(passed / total, 4) if total else 0.0,
+            )
+        )
+    return summaries
+
+
 @router.post("/equipment", response_model=EquipmentRead)
 def create_equipment(payload: EquipmentCreate, db: Session = Depends(get_db)) -> Equipment:
     return add_record(db, Equipment(**payload.model_dump()))
 
 
 @router.get("/equipment", response_model=list[EquipmentRead])
-def list_equipment(q: str | None = Query(default=None), db: Session = Depends(get_db)) -> list[Equipment]:
-    stmt = select(Equipment).order_by(Equipment.created_at.desc())
+def list_equipment(
+    q: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    lab_name: str | None = Query(default=None),
+    limit: int = Query(default=50),
+    offset: int = Query(default=0),
+    db: Session = Depends(get_db),
+) -> list[Equipment]:
+    limit, offset = page_bounds(limit, offset)
+    stmt = select(Equipment).order_by(Equipment.created_at.desc()).limit(limit).offset(offset)
     if q:
-        stmt = stmt.where(Equipment.name.ilike(f"%{q}%"))
+        stmt = stmt.where(or_(Equipment.name.ilike(f"%{q}%"), Equipment.asset_code.ilike(f"%{q}%")))
+    if status:
+        stmt = stmt.where(Equipment.status == status)
+    if lab_name:
+        stmt = stmt.where(Equipment.lab_name.ilike(f"%{lab_name}%"))
     return list(db.scalars(stmt))
 
 
 @router.post("/equipment-bookings", response_model=EquipmentBookingRead)
 def create_equipment_booking(payload: EquipmentBookingCreate, db: Session = Depends(get_db)) -> EquipmentBooking:
+    if payload.ends_at <= payload.starts_at:
+        raise HTTPException(status_code=400, detail="Booking end time must be later than start time")
+    conflict = db.scalar(
+        select(EquipmentBooking).where(
+            and_(
+                EquipmentBooking.equipment_id == payload.equipment_id,
+                EquipmentBooking.starts_at < payload.ends_at,
+                EquipmentBooking.ends_at > payload.starts_at,
+            )
+        )
+    )
+    if conflict:
+        raise HTTPException(status_code=409, detail="Equipment is already booked for the selected time range")
     return add_record(db, EquipmentBooking(**payload.model_dump()))
 
 
@@ -175,6 +285,34 @@ def create_repair_ticket(payload: RepairTicketCreate, db: Session = Depends(get_
 @router.get("/repair-tickets", response_model=list[RepairTicketRead])
 def list_repair_tickets(db: Session = Depends(get_db)) -> list[RepairTicket]:
     return list(db.scalars(select(RepairTicket).order_by(RepairTicket.created_at.desc())))
+
+
+@router.patch("/repair-tickets/{ticket_id}", response_model=RepairTicketRead)
+def update_repair_ticket(ticket_id: int, payload: RepairTicketUpdate, db: Session = Depends(get_db)) -> RepairTicket:
+    ticket = db.get(RepairTicket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Repair ticket not found")
+    ticket.status = payload.status
+    db.commit()
+    db.refresh(ticket)
+    return ticket
+
+
+@router.get("/analytics/incidents", response_model=IncidentAnalytics)
+def incident_analytics(db: Session = Depends(get_db)) -> IncidentAnalytics:
+    by_category = [
+        CountBucket(name=name, count=count)
+        for name, count in db.execute(
+            select(IncidentCase.category, func.count()).group_by(IncidentCase.category).order_by(func.count().desc())
+        )
+    ]
+    by_severity = [
+        CountBucket(name=str(name), count=count)
+        for name, count in db.execute(
+            select(IncidentCase.severity, func.count()).group_by(IncidentCase.severity).order_by(func.count().desc())
+        )
+    ]
+    return IncidentAnalytics(by_category=by_category, by_severity=by_severity)
 
 
 @router.get("/analytics/dashboard", response_model=DashboardStats)
@@ -205,4 +343,3 @@ async def save_upload(file: UploadFile, category: str) -> UploadedFile:
         size=len(content),
         url=f"/uploads/{category}/{stored_name}",
     )
-    PasswordLogin,

@@ -13,21 +13,24 @@ from app.models import (
 )
 
 
-class UserCreate(BaseModel):
+class UserBase(BaseModel):
     username: str
     display_name: str
     email: EmailStr
     role: UserRole = UserRole.researcher
     auth_provider: str = "password"
     department: str | None = None
+
+
+class UserCreate(UserBase):
     password: str | None = None
 
 
-class UserRead(UserCreate):
+class UserRead(UserBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     created_at: datetime
-    password: None = None
+    is_active: bool
 
 
 class PasswordLogin(BaseModel):
@@ -92,6 +95,15 @@ class TrainingRead(TrainingCreate):
     created_at: datetime
 
 
+class TrainingResultSummary(BaseModel):
+    training_id: int
+    title: str
+    passed: int
+    failed: int
+    pending: int
+    pass_rate: float
+
+
 class ExamResultCreate(BaseModel):
     training_id: int
     user_id: int
@@ -146,6 +158,10 @@ class RepairTicketRead(RepairTicketCreate):
     created_at: datetime
 
 
+class RepairTicketUpdate(BaseModel):
+    status: RepairStatus
+
+
 class DashboardStats(BaseModel):
     regulation_count: int
     incident_count: int
@@ -153,6 +169,16 @@ class DashboardStats(BaseModel):
     equipment_count: int
     open_repair_count: int
     exam_pass_rate: float
+
+
+class CountBucket(BaseModel):
+    name: str
+    count: int
+
+
+class IncidentAnalytics(BaseModel):
+    by_category: list[CountBucket]
+    by_severity: list[CountBucket]
 
 
 class UploadedFile(BaseModel):
