@@ -6,6 +6,10 @@ LABEL org.opencontainers.image.source="https://github.com/LIghtJUNction/lab-safe
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release
