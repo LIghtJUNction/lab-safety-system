@@ -12,6 +12,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
+mod cli;
 mod config;
 mod db;
 mod models;
@@ -23,6 +24,10 @@ use routes::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if cli::try_run(std::env::args().collect()).await? {
+        return Ok(());
+    }
+
     if std::env::args().any(|arg| arg == "--healthcheck") {
         return healthcheck();
     }

@@ -10,6 +10,8 @@ pub struct Settings {
     pub static_dir: Option<PathBuf>,
     pub sso_enabled: bool,
     pub oauth_enabled: bool,
+    pub sso_login_url: Option<String>,
+    pub oauth_login_url: Option<String>,
 }
 
 impl Settings {
@@ -33,6 +35,8 @@ impl Settings {
             static_dir: env::var("STATIC_DIR").ok().map(PathBuf::from),
             sso_enabled: env::var("SSO_ENABLED").is_ok_and(|value| value == "true"),
             oauth_enabled: env::var("OAUTH_ENABLED").is_ok_and(|value| value == "true"),
+            sso_login_url: env::var("SSO_LOGIN_URL").ok(),
+            oauth_login_url: env::var("OAUTH_LOGIN_URL").ok(),
         })
     }
 }

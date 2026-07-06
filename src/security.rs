@@ -18,6 +18,25 @@ pub fn hash_password(password: &str) -> String {
     format!("pbkdf2_sha256${salt}${}", hex(&output))
 }
 
+pub fn validate_password_strength(password: &str) -> Result<(), String> {
+    if password.len() < 12 {
+        return Err("Password must be at least 12 characters long".into());
+    }
+    if !password.chars().any(|value| value.is_ascii_lowercase()) {
+        return Err("Password must contain a lowercase letter".into());
+    }
+    if !password.chars().any(|value| value.is_ascii_uppercase()) {
+        return Err("Password must contain an uppercase letter".into());
+    }
+    if !password.chars().any(|value| value.is_ascii_digit()) {
+        return Err("Password must contain a digit".into());
+    }
+    if !password.chars().any(|value| !value.is_ascii_alphanumeric()) {
+        return Err("Password must contain a symbol".into());
+    }
+    Ok(())
+}
+
 pub fn verify_password(password: &str, stored: Option<&str>) -> bool {
     let Some(stored) = stored else { return false };
     let parts: Vec<_> = stored.split('$').collect();
@@ -57,12 +76,19 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hash_password, verify_password};
+    use super::{hash_password, validate_password_strength, verify_password};
 
     #[test]
     fn password_hash_round_trips() {
         let hash = hash_password("ChangeMe123!");
         assert!(verify_password("ChangeMe123!", Some(&hash)));
         assert!(!verify_password("wrong", Some(&hash)));
+    }
+
+    #[test]
+    fn password_strength_rejects_weak_values() {
+        assert!(validate_password_strength("weak").is_err());
+        assert!(validate_password_strength("longbutnosymbol1A").is_err());
+        assert!(validate_password_strength("StrongPassw0rd!").is_ok());
     }
 }

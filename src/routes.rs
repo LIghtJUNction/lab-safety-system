@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     config::Settings,
     models::*,
-    security::{create_access_token, hash_password, verify_password},
+    security::{create_access_token, hash_password, validate_password_strength, verify_password},
 };
 
 #[derive(Clone)]
@@ -156,6 +156,8 @@ async fn auth_methods(State(state): State<Arc<AppState>>) -> Json<AuthMethods> {
         password: true,
         sso: state.settings.sso_enabled,
         oauth: state.settings.oauth_enabled,
+        sso_login_url: state.settings.sso_login_url.clone(),
+        oauth_login_url: state.settings.oauth_login_url.clone(),
     })
 }
 
@@ -163,11 +165,16 @@ async fn password_login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<PasswordLogin>,
 ) -> Result<Json<AuthToken>, ApiError> {
-    let row =
-        sqlx::query("select username, password_hash, is_active from users where username = $1")
-            .bind(&payload.username)
-            .fetch_optional(&state.pool)
-            .await?;
+    let row = sqlx::query(
+        r#"
+        select id, username, display_name, email, role, auth_provider, password_hash, is_active
+        from users
+        where username = $1
+        "#,
+    )
+    .bind(&payload.username)
+    .fetch_optional(&state.pool)
+    .await?;
     let Some(row) = row else {
         return Err(ApiError {
             status: StatusCode::UNAUTHORIZED,
@@ -195,6 +202,14 @@ async fn password_login(
         access_token: token,
         token_type: "bearer",
         expires_in: state.settings.token_ttl_seconds,
+        user: AuthUser {
+            id: row.try_get("id")?,
+            username: row.try_get("username")?,
+            display_name: row.try_get("display_name")?,
+            email: row.try_get("email")?,
+            role: row.try_get("role")?,
+            auth_provider: row.try_get("auth_provider")?,
+        },
     }))
 }
 
@@ -202,6 +217,9 @@ async fn create_user(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<UserCreate>,
 ) -> Result<Json<User>, ApiError> {
+    if let Some(password) = payload.password.as_deref() {
+        validate_password_strength(password).map_err(ApiError::bad_request)?;
+    }
     let password_hash = payload.password.as_deref().map(hash_password);
     let user = sqlx::query_as::<_, User>(
         r#"

@@ -37,6 +37,17 @@ pub struct AuthToken {
     pub access_token: String,
     pub token_type: &'static str,
     pub expires_in: i64,
+    pub user: AuthUser,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthUser {
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    pub email: String,
+    pub role: String,
+    pub auth_provider: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +55,8 @@ pub struct AuthMethods {
     pub password: bool,
     pub sso: bool,
     pub oauth: bool,
+    pub sso_login_url: Option<String>,
+    pub oauth_login_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]

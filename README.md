@@ -58,6 +58,17 @@ SECRET_KEY=请改成随机长密钥
 docker compose -f docker-compose.integrated.yml up -d
 ```
 
+首次部署后创建超级管理员。密码必须是强密码，至少 12 位并包含大小写字母、数字和符号：
+
+```bash
+docker compose -f docker-compose.integrated.yml exec app \
+  lab-safety-system users bootstrap-super-admin \
+  --username admin \
+  --password '请替换为强密码' \
+  --email admin@example.com \
+  --display-name 超级管理员
+```
+
 查看状态：
 
 ```bash
@@ -135,6 +146,8 @@ TOKEN_TTL_SECONDS=3600
 
 SSO_ENABLED=false
 OAUTH_ENABLED=false
+SSO_LOGIN_URL=
+OAUTH_LOGIN_URL=
 ```
 
 部署时必须修改 `POSTGRES_PASSWORD` 和 `SECRET_KEY`。如果服务器上 `5432`、`8080` 或 `8081` 已被占用，可以在 `.env` 中修改：
@@ -146,6 +159,55 @@ FRONTEND_PORT=18081
 ```
 
 整合版部署只使用 `APP_PORT` 作为访问端口；分离版部署会同时使用 `APP_PORT` 和 `FRONTEND_PORT`。
+
+如果要接入 SSO 或 OAuth，把对应开关和跳转地址打开：
+
+```env
+SSO_ENABLED=true
+SSO_LOGIN_URL=https://idp.example.com/sso/login
+OAUTH_ENABLED=true
+OAUTH_LOGIN_URL=https://idp.example.com/oauth/authorize
+```
+
+## 命令行用户管理
+
+命令行用户管理仅允许超级管理员执行。首次部署只能在系统中不存在超级管理员时执行 bootstrap：
+
+```bash
+lab-safety-system users bootstrap-super-admin \
+  --username admin \
+  --password '请替换为强密码' \
+  --email admin@example.com
+```
+
+之后所有用户管理命令都必须提供超级管理员账号和密码：
+
+```bash
+lab-safety-system users create \
+  --actor admin \
+  --actor-password '超级管理员强密码' \
+  --username researcher01 \
+  --password '普通用户强密码' \
+  --email researcher01@example.com \
+  --role researcher \
+  --display-name 研究员01
+
+lab-safety-system users list \
+  --actor admin \
+  --actor-password '超级管理员强密码'
+
+lab-safety-system users set-password \
+  --actor admin \
+  --actor-password '超级管理员强密码' \
+  --username researcher01 \
+  --password '新的普通用户强密码'
+```
+
+支持角色：
+
+- `super_admin`：超级管理员，可以使用命令行管理用户
+- `admin`：管理员，可以进入管理端界面
+- `researcher`：普通用户，只进入个人安全任务界面
 
 ## 本地源码运行
 

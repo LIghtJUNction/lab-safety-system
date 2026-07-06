@@ -25,6 +25,8 @@ services:
       UPLOAD_DIR: /app/uploads
       SSO_ENABLED: ${SSO_ENABLED:-false}
       OAUTH_ENABLED: ${OAUTH_ENABLED:-false}
+      SSO_LOGIN_URL: ${SSO_LOGIN_URL:-}
+      OAUTH_LOGIN_URL: ${OAUTH_LOGIN_URL:-}
     volumes:
       - backend-uploads:/app/uploads
     ports:
