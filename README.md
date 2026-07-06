@@ -254,6 +254,22 @@ lab-safety-system users set-password \
 - `admin`：管理员，可以进入管理端界面
 - `researcher`：普通用户，只进入个人安全任务界面
 
+## 本地验证
+
+后端和前端服务启动后，可以执行以下命令做完整冒烟验证。该验证会打开登录页，使用账号密码登录，检查 SSO/OAuth 回调错误处理，创建法规、事故案例、培训、设备、用户、预约、报修、考核记录，并用普通用户完成隐患上报、责任认领、问题照片上传和整改照片上传。
+
+```bash
+cd frontend
+npm run build
+E2E_BASE_URL=http://127.0.0.1:5174 \
+E2E_ADMIN_USER=cli_super \
+E2E_ADMIN_PASSWORD='StrongerAdmin123!' \
+E2E_FEDERATED_SECRET='federated-local-secret' \
+npm run e2e:smoke
+```
+
+如果部署环境未启用 SSO/OAuth，登录页会显示对应入口未配置；后端回调只有在 `SSO_ENABLED` / `OAUTH_ENABLED` 和 `FEDERATED_LOGIN_SECRET` 配置正确时才会接受已签名的身份提供方回调。
+
 ## 本地源码运行
 
 首次克隆需要拉取前端子模块：
