@@ -182,6 +182,6 @@ E2E_ADMIN_USER=cli_super \
 E2E_ADMIN_PASSWORD='StrongerAdmin123!' \
   npm run e2e:smoke
 ```
-`E2E_ADMIN_USER` / `E2E_ADMIN_PASSWORD` 须与本地已创建的超级管理员账号一致；`tests/e2e-smoke.mjs` 中的默认值分别为 `cli_super` 与 `StrongerAdmin123!`。
+`E2E_ADMIN_USER` / `E2E_ADMIN_PASSWORD` 须与本地已创建的系统管理员账号一致；`tests/e2e-smoke.mjs` 中的默认值分别为 `cli_super` 与 `StrongerAdmin123!`。
 
 此命令将运行 Playwright 冒烟测试，自动模拟管理员与普通用户的完整交互流程（登录、Passkey、法规/案例/培训/设备/用户创建、隐患上报、认领、整改照片上传等），用于快速验证前后端连通性。

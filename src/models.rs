@@ -26,6 +26,70 @@ pub struct UserCreate {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Serialize, FromRow)]
+pub struct Lab {
+    pub id: i64,
+    pub code: String,
+    pub name: String,
+    pub location: Option<String>,
+    pub department: Option<String>,
+    pub manager_user_id: Option<i64>,
+    pub contact: Option<String>,
+    pub status: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LabCreate {
+    pub code: String,
+    pub name: String,
+    pub location: Option<String>,
+    pub department: Option<String>,
+    pub manager_user_id: Option<i64>,
+    pub contact: Option<String>,
+    pub status: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LabUpdate {
+    pub code: Option<String>,
+    pub name: Option<String>,
+    pub location: Option<String>,
+    pub department: Option<String>,
+    pub manager_user_id: Option<i64>,
+    pub contact: Option<String>,
+    pub status: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct LabUser {
+    pub id: i64,
+    pub lab_id: i64,
+    pub user_id: i64,
+    pub lab_role: String,
+    pub username: String,
+    pub display_name: String,
+    pub email: String,
+    pub global_role: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LabUserAssign {
+    pub user_id: i64,
+    pub lab_role: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct LabMembership {
+    pub lab_id: i64,
+    pub lab_name: String,
+    pub role: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PasswordLogin {
     pub username: String,
@@ -84,6 +148,7 @@ pub struct RegulationCreate {
 #[derive(Debug, Serialize, FromRow)]
 pub struct IncidentCase {
     pub id: i64,
+    pub lab_id: Option<i64>,
     pub title: String,
     pub lab_name: String,
     pub occurred_on: NaiveDate,
@@ -98,7 +163,8 @@ pub struct IncidentCase {
 #[derive(Debug, Deserialize)]
 pub struct IncidentCaseCreate {
     pub title: String,
-    pub lab_name: String,
+    pub lab_id: Option<i64>,
+    pub lab_name: Option<String>,
     pub occurred_on: NaiveDate,
     pub severity: String,
     pub category: String,
@@ -148,6 +214,7 @@ pub struct ExamResultCreate {
 #[derive(Debug, Serialize, FromRow)]
 pub struct Equipment {
     pub id: i64,
+    pub lab_id: Option<i64>,
     pub asset_code: String,
     pub name: String,
     pub lab_name: String,
@@ -160,7 +227,8 @@ pub struct Equipment {
 pub struct EquipmentCreate {
     pub asset_code: String,
     pub name: String,
-    pub lab_name: String,
+    pub lab_id: Option<i64>,
+    pub lab_name: Option<String>,
     pub status: Option<String>,
     pub owner: Option<String>,
 }
@@ -211,6 +279,7 @@ pub struct RepairTicketUpdate {
 #[derive(Debug, Serialize, FromRow)]
 pub struct SafetyHazard {
     pub id: i64,
+    pub lab_id: Option<i64>,
     pub title: String,
     pub lab_name: String,
     pub category: String,
@@ -227,7 +296,8 @@ pub struct SafetyHazard {
 #[derive(Debug, Deserialize)]
 pub struct SafetyHazardCreate {
     pub title: String,
-    pub lab_name: String,
+    pub lab_id: Option<i64>,
+    pub lab_name: Option<String>,
     pub category: String,
     pub description: String,
     pub reported_by: i64,

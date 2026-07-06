@@ -83,7 +83,7 @@ docker compose -f docker-compose.integrated.yml ps
 
 ## 第一次管理员登录
 
-首次部署后，系统里还没有超级管理员。执行下面一条命令创建管理员，并让后端自动生成强密码：
+首次部署后，系统里还没有系统管理员。执行下面一条命令创建管理员，并让后端自动生成强密码：
 
 ```bash
 docker compose -f docker-compose.integrated.yml exec app \
@@ -94,7 +94,7 @@ docker compose -f docker-compose.integrated.yml exec app \
 命令会输出类似：
 
 ```text
-Created super admin: admin
+Created system administrator: admin
 Generated password: Abc...!
 ```
 
@@ -129,7 +129,7 @@ docker compose -f docker-compose.integrated.yml exec app \
 docker compose -f docker-compose.integrated.yml exec app \
   lab-safety-system users set-password \
   --actor admin \
-  --actor-password '当前超级管理员密码' \
+  --actor-password '当前系统管理员密码' \
   --username admin \
   --generate-password true
 ```
@@ -140,7 +140,7 @@ docker compose -f docker-compose.integrated.yml exec app \
 docker compose -f docker-compose.prod.yml exec backend \
   lab-safety-system users set-password \
   --actor admin \
-  --actor-password '当前超级管理员密码' \
+  --actor-password '当前系统管理员密码' \
   --username admin \
   --generate-password true
 ```
@@ -152,17 +152,17 @@ docker compose -f docker-compose.integrated.yml exec app \
   lab-safety-system users bootstrap-super-admin \
   --username admin \
   --email admin@example.com \
-  --display-name 超级管理员 \
+  --display-name 系统管理员 \
   --generate-password true
 ```
 
-如果已经创建过超级管理员，再执行 bootstrap 会被拒绝。需要重置密码时，使用已有超级管理员执行：
+如果已经创建过系统管理员，再执行 bootstrap 会被拒绝。需要重置密码时，使用已有系统管理员执行：
 
 ```bash
 docker compose -f docker-compose.integrated.yml exec app \
   lab-safety-system users set-password \
   --actor admin \
-  --actor-password '当前超级管理员密码' \
+  --actor-password '当前系统管理员密码' \
   --username admin \
   --generate-password true
 ```

@@ -42,7 +42,7 @@ lab-safety-system users list --actor USER --actor-password PASS
 lab-safety-system users set-password --actor USER --actor-password PASS --username USER --password PASS
 lab-safety-system users set-password --actor USER --actor-password PASS --username USER --generate-password true
 
-Roles: super_admin, admin, researcher"
+Roles: system_admin, lab_member, visitor. Lab-scoped roles are managed by the HTTP API: lab_admin, lab_member, visitor."
     );
 }
 
@@ -79,13 +79,16 @@ async fn bootstrap_super_admin(
     pool: &PgPool,
     flags: HashMap<String, String>,
 ) -> anyhow::Result<()> {
-    let existing: i64 =
-        sqlx::query("select count(*)::bigint as count from users where role = 'super_admin'")
-            .fetch_one(pool)
-            .await?
-            .get("count");
+    let existing: i64 = sqlx::query(
+        "select count(*)::bigint as count from users where role in ('system_admin', 'super_admin')",
+    )
+    .fetch_one(pool)
+    .await?
+    .get("count");
     if existing > 0 {
-        bail!("Super admin already exists; use an existing super admin for user management");
+        bail!(
+            "System administrator already exists; use the existing system administrator for user management"
+        );
     }
 
     let generated = flag_enabled(&flags, "generate-password");
@@ -108,19 +111,19 @@ async fn bootstrap_super_admin(
     let display_name = flags
         .get("display-name")
         .cloned()
-        .unwrap_or_else(|| "超级管理员".to_string());
+        .unwrap_or_else(|| "系统管理员".to_string());
 
     insert_user(
         pool,
         &username,
         &display_name,
         &email,
-        "super_admin",
+        "system_admin",
         flags.get("department").map(String::as_str),
         &password,
     )
     .await?;
-    println!("Created super admin: {username}");
+    println!("Created system administrator: {username}");
     if generated {
         println!("Generated password: {password}");
     }
@@ -214,10 +217,10 @@ async fn require_super_admin(pool: &PgPool, flags: &HashMap<String, String>) -> 
     let password_hash: Option<String> = row.get("password_hash");
     let active: bool = row.get("is_active");
     if !active
-        || role != "super_admin"
+        || !matches!(role.as_str(), "system_admin" | "super_admin")
         || !verify_password(&actor_password, password_hash.as_deref())
     {
-        bail!("CLI user management requires a valid active super admin actor");
+        bail!("CLI user management requires a valid active system administrator actor");
     }
     Ok(())
 }
@@ -251,7 +254,7 @@ async fn insert_user(
 
 fn validate_role(role: &str) -> anyhow::Result<()> {
     match role {
-        "super_admin" | "admin" | "researcher" => Ok(()),
-        _ => bail!("Invalid role: {role}. Use super_admin, admin, or researcher"),
+        "system_admin" | "lab_member" | "visitor" => Ok(()),
+        _ => bail!("Invalid role: {role}. Use system_admin, lab_member, or visitor"),
     }
 }

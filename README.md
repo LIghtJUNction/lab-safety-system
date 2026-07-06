@@ -11,12 +11,13 @@
 
 ## 功能范围
 
-- 实验室安全隐患管理：问题照片上传、责任认领、整改照片上传、整改提交和闭环统计
-- 管理员和普通用户登录后看到不同界面
+- 多实验室管理：实验室主数据、实验室成员关系、实验室内角色
+- 实验室安全隐患管理：按实验室上报问题照片、责任认领、整改照片上传、整改提交和闭环统计
+- 系统管理员、实验室管理员、实验室成员、访客登录后看到不同界面
 - 法规条例、事故案例、培训考核、设备预约、报修工单、用户管理和统计分析
 - 账号密码登录、Passkey、SSO 单点登录回调、OAuth 授权登录回调
 - PostgreSQL 持久化存储
-- 命令行用户管理：仅超级管理员可用
+- 命令行用户管理：仅系统管理员可用
 
 ## 技术栈
 
@@ -57,7 +58,7 @@ SECRET_KEY=替换为随机长密钥
 docker compose -f docker-compose.integrated.yml up -d
 ```
 
-首次创建超级管理员，后端会自动生成强密码：
+首次创建系统管理员，后端会自动生成强密码：
 
 ```bash
 docker compose -f docker-compose.integrated.yml exec app \
@@ -142,7 +143,7 @@ FEDERATED_LOGIN_SECRET=必须替换为随机长密钥
 - SSO：`https://你的域名/api/v1/auth/sso/callback`
 - OAuth：`https://你的域名/api/v1/auth/oauth/callback`
 
-企业 SSO 网关、OAuth2 Proxy 或 IdP 回调时需要传入 `username`、`email`、`display_name`、`role`、`department`、`exp`、`sig`。`role` 只能是 `admin` 或 `researcher`，不能通过联邦登录创建超级管理员。
+企业 SSO 网关、OAuth2 Proxy 或 IdP 回调时需要传入 `username`、`email`、`display_name`、`role`、`department`、`exp`、`sig`。`role` 只能是 `lab_member` 或 `visitor`，不能通过联邦登录创建系统管理员。
 
 ## Passkey
 
@@ -168,12 +169,12 @@ lab-safety-system users bootstrap-super-admin --generate-password true
 ```bash
 lab-safety-system users create \
   --actor admin \
-  --actor-password '超级管理员强密码' \
-  --username researcher01 \
-  --password 'ResearcherPass2026!' \
-  --email researcher01@example.com \
-  --role researcher \
-  --display-name 研究员01
+  --actor-password '系统管理员强密码' \
+  --username member01 \
+  --password 'MemberPass2026!' \
+  --email member01@example.com \
+  --role lab_member \
+  --display-name 实验室成员01
 ```
 
 重置密码并生成强密码：
@@ -181,7 +182,7 @@ lab-safety-system users create \
 ```bash
 lab-safety-system users set-password \
   --actor admin \
-  --actor-password '超级管理员强密码' \
+  --actor-password '系统管理员强密码' \
   --username admin \
   --generate-password true
 ```

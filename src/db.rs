@@ -24,7 +24,7 @@ const MIGRATIONS: &[&str] = &[
         username text not null unique,
         display_name text not null,
         email text not null unique,
-        role text not null default 'researcher',
+        role text not null default 'lab_member',
         auth_provider text not null default 'password',
         department text,
         password_hash text,
@@ -32,6 +32,52 @@ const MIGRATIONS: &[&str] = &[
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
     )
+    "#,
+    r#"
+    create table if not exists labs (
+        id bigserial primary key,
+        code text not null unique,
+        name text not null,
+        location text,
+        department text,
+        manager_user_id bigint references users(id) on delete set null,
+        contact text,
+        status text not null default 'active',
+        description text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+    )
+    "#,
+    r#"
+    create index if not exists idx_labs_status on labs(status)
+    "#,
+    r#"
+    create index if not exists idx_labs_name on labs(name)
+    "#,
+    r#"
+    update users set role = 'system_admin' where role = 'super_admin'
+    "#,
+    r#"
+    create unique index if not exists idx_users_single_system_admin
+    on users ((role))
+    where role = 'system_admin'
+    "#,
+    r#"
+    create table if not exists lab_users (
+        id bigserial primary key,
+        lab_id bigint not null references labs(id) on delete cascade,
+        user_id bigint not null references users(id) on delete cascade,
+        lab_role text not null,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (lab_id, user_id)
+    )
+    "#,
+    r#"
+    create index if not exists idx_lab_users_user_id on lab_users(user_id)
+    "#,
+    r#"
+    create index if not exists idx_lab_users_lab_role on lab_users(lab_id, lab_role)
     "#,
     r#"
     create table if not exists regulations (
@@ -63,6 +109,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     alter table incident_cases
     add column if not exists file_url text
+    "#,
+    r#"
+    alter table incident_cases
+    add column if not exists lab_id bigint references labs(id) on delete set null
+    "#,
+    r#"
+    create index if not exists idx_incident_cases_lab_id on incident_cases(lab_id)
     "#,
     r#"
     create table if not exists trainings (
@@ -98,6 +151,13 @@ const MIGRATIONS: &[&str] = &[
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
     )
+    "#,
+    r#"
+    alter table equipment
+    add column if not exists lab_id bigint references labs(id) on delete set null
+    "#,
+    r#"
+    create index if not exists idx_equipment_lab_id on equipment(lab_id)
     "#,
     r#"
     create table if not exists equipment_bookings (
@@ -138,6 +198,13 @@ const MIGRATIONS: &[&str] = &[
         created_at timestamptz not null default now(),
         updated_at timestamptz not null default now()
     )
+    "#,
+    r#"
+    alter table safety_hazards
+    add column if not exists lab_id bigint references labs(id) on delete set null
+    "#,
+    r#"
+    create index if not exists idx_safety_hazards_lab_id on safety_hazards(lab_id)
     "#,
     r#"
     create table if not exists passkeys (

@@ -38,6 +38,11 @@ type PasskeyRegistrationCache = HashMap<String, (i64, PasskeyRegistration)>;
 type PasskeyAuthenticationCache =
     HashMap<String, (String, PasskeyAuthentication, Vec<StoredPasskey>)>;
 
+const ROLE_SYSTEM_ADMIN: &str = "system_admin";
+const ROLE_LAB_ADMIN: &str = "lab_admin";
+const ROLE_LAB_MEMBER: &str = "lab_member";
+const ROLE_VISITOR: &str = "visitor";
+
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
@@ -108,6 +113,7 @@ pub struct ListQuery {
     q: Option<String>,
     status: Option<String>,
     role: Option<String>,
+    lab_id: Option<i64>,
     responsible_user_id: Option<i64>,
     reported_by: Option<i64>,
     limit: Option<i64>,
@@ -190,7 +196,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/sso/callback", get(sso_callback))
         .route("/api/v1/auth/oauth/callback", get(oauth_callback))
         .route("/api/v1/auth/me", get(auth_me))
+        .route("/api/v1/auth/my-labs", get(my_labs))
         .route("/api/v1/users", get(list_users).post(create_user))
+        .route("/api/v1/labs", get(list_labs).post(create_lab))
+        .route("/api/v1/labs/{id}", get(get_lab).patch(update_lab))
+        .route(
+            "/api/v1/labs/{id}/users",
+            get(list_lab_users).post(assign_lab_user),
+        )
         .route(
             "/api/v1/regulations",
             get(list_regulations).post(create_regulation),
@@ -567,7 +580,7 @@ async fn federated_callback(
     let role = payload
         .role
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "researcher".to_string());
+        .unwrap_or_else(|| ROLE_LAB_MEMBER.to_string());
     validate_federated_role(&role)?;
     let message = federated_signature_message(
         provider,
@@ -749,7 +762,7 @@ async fn upsert_federated_user(
         on conflict (username) do update set
             display_name = excluded.display_name,
             email = excluded.email,
-            role = case when users.role = 'super_admin' then users.role else excluded.role end,
+        role = case when users.role in ('system_admin', 'super_admin') then users.role else excluded.role end,
             auth_provider = excluded.auth_provider,
             department = excluded.department,
             updated_at = now()
@@ -768,9 +781,9 @@ async fn upsert_federated_user(
 
 fn validate_federated_role(role: &str) -> Result<(), ApiError> {
     match role {
-        "admin" | "researcher" => Ok(()),
+        ROLE_LAB_MEMBER | ROLE_VISITOR => Ok(()),
         _ => Err(ApiError::bad_request(
-            "Federated login role must be admin or researcher",
+            "Federated login role must be lab_member or visitor",
         )),
     }
 }
@@ -808,6 +821,38 @@ async fn auth_me(
     Ok(Json(require_user(&state, &headers).await?))
 }
 
+async fn my_labs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<LabMembership>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    let memberships = if is_system_admin(&actor) {
+        sqlx::query_as::<_, LabMembership>(
+            r#"
+            select id as lab_id, name as lab_name, 'system_admin'::text as role
+            from labs
+            order by name asc
+            "#,
+        )
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, LabMembership>(
+            r#"
+            select lu.lab_id, l.name as lab_name, lu.lab_role as role
+            from lab_users lu
+            join labs l on lu.lab_id = l.id
+            where lu.user_id = $1
+            order by l.name asc
+            "#,
+        )
+        .bind(actor.id)
+        .fetch_all(&state.pool)
+        .await?
+    };
+    Ok(Json(memberships))
+}
+
 async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<AuthUser, ApiError> {
     let token = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -843,23 +888,176 @@ async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<AuthUser,
 }
 
 fn is_admin(user: &AuthUser) -> bool {
-    matches!(user.role.as_str(), "admin" | "super_admin")
+    is_system_admin(user)
+}
+
+fn is_system_admin(user: &AuthUser) -> bool {
+    matches!(user.role.as_str(), ROLE_SYSTEM_ADMIN | "super_admin")
 }
 
 fn require_admin(user: &AuthUser) -> Result<(), ApiError> {
-    if is_admin(user) {
+    if is_system_admin(user) {
         Ok(())
     } else {
-        Err(ApiError::forbidden("Administrator role required"))
+        Err(ApiError::forbidden("System administrator role required"))
     }
 }
 
+fn validate_global_role(role: &str) -> Result<(), ApiError> {
+    if matches!(role, ROLE_LAB_MEMBER | ROLE_VISITOR) {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "API user role must be lab_member or visitor",
+        ))
+    }
+}
+
+fn validate_lab_role(role: &str) -> Result<(), ApiError> {
+    if matches!(role, ROLE_LAB_ADMIN | ROLE_LAB_MEMBER | ROLE_VISITOR) {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "Lab role must be lab_admin, lab_member, or visitor",
+        ))
+    }
+}
+
+async fn is_lab_admin(pool: &PgPool, lab_id: i64, user_id: i64) -> Result<bool, ApiError> {
+    Ok(sqlx::query_scalar::<_, bool>(
+        "select exists(select 1 from lab_users where lab_id = $1 and user_id = $2 and lab_role = 'lab_admin')",
+    )
+    .bind(lab_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?)
+}
+
+async fn require_lab_manager(pool: &PgPool, actor: &AuthUser, lab_id: i64) -> Result<(), ApiError> {
+    if is_system_admin(actor) || is_lab_admin(pool, lab_id, actor.id).await? {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "System administrator or lab administrator role required",
+        ))
+    }
+}
+
+async fn require_lab_access(pool: &PgPool, actor: &AuthUser, lab_id: i64) -> Result<(), ApiError> {
+    if is_system_admin(actor) {
+        return Ok(());
+    }
+    let exists = sqlx::query_scalar::<_, bool>(
+        "select exists(select 1 from lab_users where lab_id = $1 and user_id = $2)",
+    )
+    .bind(lab_id)
+    .bind(actor.id)
+    .fetch_one(pool)
+    .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Lab access required"))
+    }
+}
+
+async fn lab_role_for_user(
+    pool: &PgPool,
+    lab_id: i64,
+    user_id: i64,
+) -> Result<Option<String>, ApiError> {
+    Ok(sqlx::query_scalar::<_, String>(
+        "select lab_role from lab_users where lab_id = $1 and user_id = $2",
+    )
+    .bind(lab_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
+async fn require_lab_role(
+    pool: &PgPool,
+    actor: &AuthUser,
+    lab_id: i64,
+    allowed_roles: &[&str],
+) -> Result<(), ApiError> {
+    if is_system_admin(actor) {
+        return Ok(());
+    }
+    let role = lab_role_for_user(pool, lab_id, actor.id).await?;
+    if role
+        .as_deref()
+        .is_some_and(|role| allowed_roles.contains(&role))
+    {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("Insufficient lab role"))
+    }
+}
+
+async fn hazard_scope(
+    pool: &PgPool,
+    hazard_id: i64,
+) -> Result<(Option<i64>, i64, Option<i64>), ApiError> {
+    let row = sqlx::query(
+        "select lab_id, reported_by, responsible_user_id from safety_hazards where id = $1",
+    )
+    .bind(hazard_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Hazard not found"))?;
+    Ok((
+        row.try_get("lab_id")?,
+        row.try_get("reported_by")?,
+        row.try_get("responsible_user_id")?,
+    ))
+}
+
+async fn equipment_lab_id(pool: &PgPool, equipment_id: i64) -> Result<Option<i64>, ApiError> {
+    let lab_id = sqlx::query_scalar::<_, Option<i64>>("select lab_id from equipment where id = $1")
+        .bind(equipment_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Equipment not found"))?;
+    Ok(lab_id)
+}
+
 fn ensure_self_or_admin(user: &AuthUser, target_user_id: i64) -> Result<(), ApiError> {
-    if is_admin(user) || user.id == target_user_id {
+    if is_system_admin(user) || user.id == target_user_id {
         Ok(())
     } else {
         Err(ApiError::forbidden("Cannot manage another user's record"))
     }
+}
+
+fn validate_lab_status(status: &str) -> Result<(), ApiError> {
+    if matches!(status, "active" | "inactive" | "maintenance") {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "Lab status must be active, inactive, or maintenance",
+        ))
+    }
+}
+
+async fn resolve_lab_reference(
+    pool: &PgPool,
+    lab_id: Option<i64>,
+    lab_name: Option<String>,
+) -> Result<(Option<i64>, String), ApiError> {
+    if let Some(lab_id) = lab_id {
+        let name = sqlx::query_scalar::<_, String>("select name from labs where id = $1")
+            .bind(lab_id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or_else(|| ApiError::not_found("Lab not found"))?;
+        return Ok((Some(lab_id), name));
+    }
+
+    let lab_name = lab_name
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request("lab_id or lab_name is required"))?;
+    Ok((None, lab_name))
 }
 
 async fn create_user(
@@ -881,12 +1079,8 @@ async fn create_user(
     if auth_provider == "password" && payload.password.is_none() {
         return Err(ApiError::bad_request("Password users require a password"));
     }
-    let role = payload.role.unwrap_or_else(|| "researcher".into());
-    if !matches!(role.as_str(), "admin" | "researcher") {
-        return Err(ApiError::bad_request(
-            "API user creation only supports admin or researcher",
-        ));
-    }
+    let role = payload.role.unwrap_or_else(|| ROLE_LAB_MEMBER.to_string());
+    validate_global_role(&role)?;
     let password_hash = payload.password.as_deref().map(hash_password);
     let user = sqlx::query_as::<_, User>(
         r#"
@@ -913,7 +1107,21 @@ async fn list_users(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<User>>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    require_admin(&actor)?;
+    let is_admin = is_system_admin(&actor) || {
+        let has_admin_membership = sqlx::query_scalar::<_, bool>(
+            "select exists(select 1 from lab_users where user_id = $1 and lab_role = 'lab_admin')",
+        )
+        .bind(actor.id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(false);
+        has_admin_membership
+    };
+    if !is_admin {
+        return Err(ApiError::forbidden(
+            "System administrator or laboratory administrator role required",
+        ));
+    }
     let q = wildcard(query.q);
     let users = sqlx::query_as::<_, User>(
         r#"
@@ -932,6 +1140,193 @@ async fn list_users(
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(users))
+}
+
+async fn create_lab(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<LabCreate>,
+) -> Result<Json<Lab>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
+    validate_lab_status(payload.status.as_deref().unwrap_or("active"))?;
+    let lab = sqlx::query_as::<_, Lab>(
+        r#"
+        insert into labs (code, name, location, department, manager_user_id, contact, status, description)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        returning id, code, name, location, department, manager_user_id, contact, status, description, created_at
+        "#,
+    )
+    .bind(payload.code)
+    .bind(payload.name)
+    .bind(payload.location)
+    .bind(payload.department)
+    .bind(payload.manager_user_id)
+    .bind(payload.contact)
+    .bind(payload.status.unwrap_or_else(|| "active".to_string()))
+    .bind(payload.description)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(lab))
+}
+
+async fn list_labs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Vec<Lab>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    let labs = sqlx::query_as::<_, Lab>(
+        r#"
+        select id, code, name, location, department, manager_user_id, contact, status, description, created_at
+        from labs
+        where ($1::text is null or code ilike $1 or name ilike $1 or location ilike $1 or department ilike $1)
+          and ($2::text is null or status = $2)
+          and (
+            $3::boolean
+            or exists(select 1 from lab_users where lab_users.lab_id = labs.id and lab_users.user_id = $4)
+          )
+        order by name asc, id asc
+        limit $5 offset $6
+        "#,
+    )
+    .bind(wildcard(query.q))
+    .bind(query.status)
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(limit(query.limit))
+    .bind(offset(query.offset))
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(labs))
+}
+
+async fn get_lab(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Lab>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_lab_access(&state.pool, &actor, id).await?;
+    let lab = sqlx::query_as::<_, Lab>(
+        r#"
+        select id, code, name, location, department, manager_user_id, contact, status, description, created_at
+        from labs
+        where id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+    lab.map(Json)
+        .ok_or_else(|| ApiError::not_found("Lab not found"))
+}
+
+async fn update_lab(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Json(payload): Json<LabUpdate>,
+) -> Result<Json<Lab>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_lab_manager(&state.pool, &actor, id).await?;
+    if let Some(status) = payload.status.as_deref() {
+        validate_lab_status(status)?;
+    }
+    let lab = sqlx::query_as::<_, Lab>(
+        r#"
+        update labs
+        set code = coalesce($1, code),
+            name = coalesce($2, name),
+            location = coalesce($3, location),
+            department = coalesce($4, department),
+            manager_user_id = coalesce($5, manager_user_id),
+            contact = coalesce($6, contact),
+            status = coalesce($7, status),
+            description = coalesce($8, description),
+            updated_at = now()
+        where id = $9
+        returning id, code, name, location, department, manager_user_id, contact, status, description, created_at
+        "#,
+    )
+    .bind(payload.code)
+    .bind(payload.name)
+    .bind(payload.location)
+    .bind(payload.department)
+    .bind(payload.manager_user_id)
+    .bind(payload.contact)
+    .bind(payload.status)
+    .bind(payload.description)
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+    lab.map(Json)
+        .ok_or_else(|| ApiError::not_found("Lab not found"))
+}
+
+async fn list_lab_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Vec<LabUser>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_lab_access(&state.pool, &actor, id).await?;
+    let users = sqlx::query_as::<_, LabUser>(
+        r#"
+        select
+          lu.id, lu.lab_id, lu.user_id, lu.lab_role, lu.created_at,
+          u.username, u.display_name, u.email, u.role as global_role
+        from lab_users lu
+        join users u on lu.user_id = u.id
+        where lu.lab_id = $1
+        order by
+          case lu.lab_role
+            when 'lab_admin' then 1
+            when 'lab_member' then 2
+            when 'visitor' then 3
+            else 4
+          end,
+          lu.user_id asc
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(users))
+}
+
+async fn assign_lab_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Json(payload): Json<LabUserAssign>,
+) -> Result<Json<LabUser>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_lab_manager(&state.pool, &actor, id).await?;
+    validate_lab_role(&payload.lab_role)?;
+    let assigned = sqlx::query_as::<_, LabUser>(
+        r#"
+        with inserted as (
+          insert into lab_users (lab_id, user_id, lab_role)
+          values ($1, $2, $3)
+          on conflict (lab_id, user_id) do update set
+            lab_role = excluded.lab_role,
+            updated_at = now()
+          returning id, lab_id, user_id, lab_role, created_at
+        )
+        select
+          i.id, i.lab_id, i.user_id, i.lab_role, i.created_at,
+          u.username, u.display_name, u.email, u.role as global_role
+        from inserted i
+        join users u on i.user_id = u.id
+        "#,
+    )
+    .bind(id)
+    .bind(payload.user_id)
+    .bind(payload.lab_role)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(assigned))
 }
 
 async fn create_regulation(
@@ -987,16 +1382,23 @@ async fn create_incident(
     Json(payload): Json<IncidentCaseCreate>,
 ) -> Result<Json<IncidentCase>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    require_admin(&actor)?;
+    let (lab_id, lab_name) =
+        resolve_lab_reference(&state.pool, payload.lab_id, payload.lab_name).await?;
+    if let Some(lab_id) = lab_id {
+        require_lab_manager(&state.pool, &actor, lab_id).await?;
+    } else {
+        require_admin(&actor)?;
+    }
     Ok(Json(sqlx::query_as::<_, IncidentCase>(
         r#"
-        insert into incident_cases (title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url)
-        values ($1, $2, $3, $4, $5, $6, $7, $8)
-        returning id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url, created_at
+        insert into incident_cases (title, lab_id, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        returning id, lab_id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url, created_at
         "#,
     )
     .bind(payload.title)
-    .bind(payload.lab_name)
+    .bind(lab_id)
+    .bind(lab_name)
     .bind(payload.occurred_on)
     .bind(payload.severity)
     .bind(payload.category)
@@ -1012,17 +1414,28 @@ async fn list_incidents(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<IncidentCase>>, ApiError> {
-    require_user(&state, &headers).await?;
+    let actor = require_user(&state, &headers).await?;
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    }
     let rows = sqlx::query_as::<_, IncidentCase>(
         r#"
-        select id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url, created_at
+        select id, lab_id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url, created_at
         from incident_cases
         where ($1::text is null or title ilike $1)
+          and (
+            $2::boolean
+            or exists(select 1 from lab_users where lab_users.lab_id = incident_cases.lab_id and lab_users.user_id = $3)
+          )
+          and ($4::bigint is null or lab_id = $4)
         order by occurred_on desc
-        limit $2 offset $3
+        limit $5 offset $6
         "#,
     )
     .bind(wildcard(query.q))
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
     .bind(limit(query.limit))
     .bind(offset(query.offset))
     .fetch_all(&state.pool)
@@ -1118,18 +1531,25 @@ async fn create_equipment(
     Json(payload): Json<EquipmentCreate>,
 ) -> Result<Json<Equipment>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    require_admin(&actor)?;
+    let (lab_id, lab_name) =
+        resolve_lab_reference(&state.pool, payload.lab_id, payload.lab_name).await?;
+    if let Some(lab_id) = lab_id {
+        require_lab_manager(&state.pool, &actor, lab_id).await?;
+    } else {
+        require_admin(&actor)?;
+    }
     Ok(Json(
         sqlx::query_as::<_, Equipment>(
             r#"
-        insert into equipment (asset_code, name, lab_name, status, owner)
-        values ($1, $2, $3, $4, $5)
-        returning id, asset_code, name, lab_name, status, owner, created_at
+        insert into equipment (asset_code, name, lab_id, lab_name, status, owner)
+        values ($1, $2, $3, $4, $5, $6)
+        returning id, lab_id, asset_code, name, lab_name, status, owner, created_at
         "#,
         )
         .bind(payload.asset_code)
         .bind(payload.name)
-        .bind(payload.lab_name)
+        .bind(lab_id)
+        .bind(lab_name)
         .bind(payload.status.unwrap_or_else(|| "available".into()))
         .bind(payload.owner)
         .fetch_one(&state.pool)
@@ -1142,19 +1562,30 @@ async fn list_equipment(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Equipment>>, ApiError> {
-    require_user(&state, &headers).await?;
+    let actor = require_user(&state, &headers).await?;
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    }
     let rows = sqlx::query_as::<_, Equipment>(
         r#"
-        select id, asset_code, name, lab_name, status, owner, created_at
+        select id, lab_id, asset_code, name, lab_name, status, owner, created_at
         from equipment
         where ($1::text is null or name ilike $1 or asset_code ilike $1)
           and ($2::text is null or status = $2)
+          and (
+            $3::boolean
+            or exists(select 1 from lab_users where lab_users.lab_id = equipment.lab_id and lab_users.user_id = $4)
+          )
+          and ($5::bigint is null or lab_id = $5)
         order by created_at desc
-        limit $3 offset $4
+        limit $6 offset $7
         "#,
     )
     .bind(wildcard(query.q))
     .bind(query.status)
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
     .bind(limit(query.limit))
     .bind(offset(query.offset))
     .fetch_all(&state.pool)
@@ -1169,6 +1600,17 @@ async fn create_booking(
 ) -> Result<Json<EquipmentBooking>, ApiError> {
     let actor = require_user(&state, &headers).await?;
     ensure_self_or_admin(&actor, payload.user_id)?;
+    if let Some(lab_id) = equipment_lab_id(&state.pool, payload.equipment_id).await? {
+        require_lab_role(
+            &state.pool,
+            &actor,
+            lab_id,
+            &[ROLE_LAB_ADMIN, ROLE_LAB_MEMBER],
+        )
+        .await?;
+    } else if !is_system_admin(&actor) {
+        return Err(ApiError::forbidden("Equipment lab access required"));
+    }
     if payload.ends_at <= payload.starts_at {
         return Err(ApiError::bad_request(
             "Booking end time must be later than start time",
@@ -1202,18 +1644,40 @@ async fn create_booking(
 async fn list_bookings(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<EquipmentBooking>>, ApiError> {
     let actor = require_user(&state, &headers).await?;
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    }
     let rows = if is_admin(&actor) {
         sqlx::query_as::<_, EquipmentBooking>(
-            "select id, equipment_id, user_id, starts_at, ends_at, purpose, created_at from equipment_bookings order by starts_at desc",
+            r#"
+            select equipment_bookings.id, equipment_id, user_id, starts_at, ends_at, purpose, equipment_bookings.created_at
+            from equipment_bookings
+            join equipment on equipment.id = equipment_bookings.equipment_id
+            where ($1::bigint is null or equipment.lab_id = $1)
+            order by starts_at desc
+            "#,
         )
+        .bind(query.lab_id)
         .fetch_all(&state.pool)
         .await?
     } else {
         sqlx::query_as::<_, EquipmentBooking>(
-            "select id, equipment_id, user_id, starts_at, ends_at, purpose, created_at from equipment_bookings where user_id = $1 order by starts_at desc",
+            r#"
+            select equipment_bookings.id, equipment_id, user_id, starts_at, ends_at, purpose, equipment_bookings.created_at
+            from equipment_bookings
+            join equipment on equipment.id = equipment_bookings.equipment_id
+            where ($1::bigint is null or equipment.lab_id = $1)
+              and (
+                user_id = $2
+                or exists(select 1 from lab_users where lab_users.lab_id = equipment.lab_id and lab_users.user_id = $2)
+              )
+            order by starts_at desc
+            "#,
         )
+        .bind(query.lab_id)
         .bind(actor.id)
         .fetch_all(&state.pool)
         .await?
@@ -1228,6 +1692,17 @@ async fn create_repair(
 ) -> Result<Json<RepairTicket>, ApiError> {
     let actor = require_user(&state, &headers).await?;
     ensure_self_or_admin(&actor, payload.reported_by)?;
+    if let Some(lab_id) = equipment_lab_id(&state.pool, payload.equipment_id).await? {
+        require_lab_role(
+            &state.pool,
+            &actor,
+            lab_id,
+            &[ROLE_LAB_ADMIN, ROLE_LAB_MEMBER],
+        )
+        .await?;
+    } else if !is_system_admin(&actor) {
+        return Err(ApiError::forbidden("Equipment lab access required"));
+    }
     Ok(Json(sqlx::query_as::<_, RepairTicket>(
         "insert into repair_tickets (equipment_id, reported_by, description, status) values ($1, $2, $3, $4) returning id, equipment_id, reported_by, description, status, created_at",
     )
@@ -1242,18 +1717,40 @@ async fn create_repair(
 async fn list_repairs(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<RepairTicket>>, ApiError> {
     let actor = require_user(&state, &headers).await?;
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    }
     let rows = if is_admin(&actor) {
         sqlx::query_as::<_, RepairTicket>(
-            "select id, equipment_id, reported_by, description, status, created_at from repair_tickets order by created_at desc",
+            r#"
+            select repair_tickets.id, repair_tickets.equipment_id, reported_by, description, repair_tickets.status, repair_tickets.created_at
+            from repair_tickets
+            join equipment on equipment.id = repair_tickets.equipment_id
+            where ($1::bigint is null or equipment.lab_id = $1)
+            order by repair_tickets.created_at desc
+            "#,
         )
+        .bind(query.lab_id)
         .fetch_all(&state.pool)
         .await?
     } else {
         sqlx::query_as::<_, RepairTicket>(
-            "select id, equipment_id, reported_by, description, status, created_at from repair_tickets where reported_by = $1 order by created_at desc",
+            r#"
+            select repair_tickets.id, repair_tickets.equipment_id, reported_by, description, repair_tickets.status, repair_tickets.created_at
+            from repair_tickets
+            join equipment on equipment.id = repair_tickets.equipment_id
+            where ($1::bigint is null or equipment.lab_id = $1)
+              and (
+                reported_by = $2
+                or exists(select 1 from lab_users where lab_users.lab_id = equipment.lab_id and lab_users.user_id = $2)
+              )
+            order by repair_tickets.created_at desc
+            "#,
         )
+        .bind(query.lab_id)
         .bind(actor.id)
         .fetch_all(&state.pool)
         .await?
@@ -1268,7 +1765,23 @@ async fn update_repair(
     Json(payload): Json<RepairTicketUpdate>,
 ) -> Result<Json<RepairTicket>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    require_admin(&actor)?;
+    let lab_id = sqlx::query_scalar::<_, Option<i64>>(
+        r#"
+        select equipment.lab_id
+        from repair_tickets
+        join equipment on equipment.id = repair_tickets.equipment_id
+        where repair_tickets.id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Repair ticket not found"))?;
+    if let Some(lab_id) = lab_id {
+        require_lab_manager(&state.pool, &actor, lab_id).await?;
+    } else {
+        require_admin(&actor)?;
+    }
     let row = sqlx::query_as::<_, RepairTicket>(
         "update repair_tickets set status = $1, updated_at = now() where id = $2 returning id, equipment_id, reported_by, description, status, created_at",
     )
@@ -1287,15 +1800,29 @@ async fn create_hazard(
 ) -> Result<Json<SafetyHazard>, ApiError> {
     let actor = require_user(&state, &headers).await?;
     ensure_self_or_admin(&actor, payload.reported_by)?;
+    let (lab_id, lab_name) =
+        resolve_lab_reference(&state.pool, payload.lab_id, payload.lab_name).await?;
+    if let Some(lab_id) = lab_id {
+        require_lab_role(
+            &state.pool,
+            &actor,
+            lab_id,
+            &[ROLE_LAB_ADMIN, ROLE_LAB_MEMBER],
+        )
+        .await?;
+    } else if !is_system_admin(&actor) {
+        return Err(ApiError::bad_request("lab_id is required"));
+    }
     Ok(Json(sqlx::query_as::<_, SafetyHazard>(
         r#"
-        insert into safety_hazards (title, lab_name, category, description, reported_by, issue_photo_url)
-        values ($1, $2, $3, $4, $5, $6)
-        returning id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
+        insert into safety_hazards (title, lab_id, lab_name, category, description, reported_by, issue_photo_url)
+        values ($1, $2, $3, $4, $5, $6, $7)
+        returning id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
     .bind(payload.title)
-    .bind(payload.lab_name)
+    .bind(lab_id)
+    .bind(lab_name)
     .bind(payload.category)
     .bind(payload.description)
     .bind(payload.reported_by)
@@ -1310,29 +1837,35 @@ async fn list_hazards(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<SafetyHazard>>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    let user_scope = if is_admin(&actor) {
-        None
-    } else {
-        Some(actor.id)
-    };
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    }
     let rows = sqlx::query_as::<_, SafetyHazard>(
         r#"
-        select id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
+        select id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         from safety_hazards
         where ($1::text is null or title ilike $1 or description ilike $1)
           and ($2::text is null or status = $2)
           and ($3::bigint is null or responsible_user_id = $3)
           and ($4::bigint is null or reported_by = $4)
-          and ($5::bigint is null or reported_by = $5 or responsible_user_id = $5)
+          and (
+            $5::boolean
+            or reported_by = $6
+            or responsible_user_id = $6
+            or exists(select 1 from lab_users where lab_users.lab_id = safety_hazards.lab_id and lab_users.user_id = $6)
+          )
+          and ($7::bigint is null or lab_id = $7)
         order by created_at desc
-        limit $6 offset $7
+        limit $8 offset $9
         "#,
     )
     .bind(wildcard(query.q))
     .bind(query.status)
     .bind(query.responsible_user_id)
     .bind(query.reported_by)
-    .bind(user_scope)
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
     .bind(limit(query.limit))
     .bind(offset(query.offset))
     .fetch_all(&state.pool)
@@ -1347,12 +1880,30 @@ async fn claim_hazard(
     Json(payload): Json<SafetyHazardClaim>,
 ) -> Result<Json<SafetyHazard>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    ensure_self_or_admin(&actor, payload.responsible_user_id)?;
+    let (lab_id, _, _) = hazard_scope(&state.pool, id).await?;
+    if is_system_admin(&actor) {
+        // Global system administrators may assign any responsible user.
+    } else if let Some(lab_id) = lab_id {
+        if is_lab_admin(&state.pool, lab_id, actor.id).await? {
+            require_lab_access(&state.pool, &actor, lab_id).await?;
+        } else {
+            ensure_self_or_admin(&actor, payload.responsible_user_id)?;
+            require_lab_role(
+                &state.pool,
+                &actor,
+                lab_id,
+                &[ROLE_LAB_ADMIN, ROLE_LAB_MEMBER],
+            )
+            .await?;
+        }
+    } else {
+        ensure_self_or_admin(&actor, payload.responsible_user_id)?;
+    }
     let row = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards set responsible_user_id = $1, status = 'claimed', updated_at = now()
         where id = $2
-        returning id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
+        returning id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
     .bind(payload.responsible_user_id)
@@ -1370,13 +1921,30 @@ async fn remediate_hazard(
     Json(payload): Json<SafetyHazardRemediation>,
 ) -> Result<Json<SafetyHazard>, ApiError> {
     let actor = require_user(&state, &headers).await?;
+    let (lab_id, _, responsible_user_id) = hazard_scope(&state.pool, id).await?;
+    if let Some(lab_id) = lab_id {
+        if !is_system_admin(&actor) && !is_lab_admin(&state.pool, lab_id, actor.id).await? {
+            if responsible_user_id != Some(actor.id) {
+                return Err(ApiError::forbidden(
+                    "Cannot remediate another user's hazard",
+                ));
+            }
+            require_lab_role(
+                &state.pool,
+                &actor,
+                lab_id,
+                &[ROLE_LAB_ADMIN, ROLE_LAB_MEMBER],
+            )
+            .await?;
+        }
+    }
     let row = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards
         set remediation_photo_url = $1, remediation_note = $2, status = 'remediation_submitted', updated_at = now()
         where id = $3 and responsible_user_id is not null
           and ($4::boolean or responsible_user_id = $5)
-        returning id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
+        returning id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
     .bind(payload.remediation_photo_url)
@@ -1397,12 +1965,17 @@ async fn update_hazard_status(
     Json(payload): Json<SafetyHazardStatusUpdate>,
 ) -> Result<Json<SafetyHazard>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    require_admin(&actor)?;
+    let (lab_id, _, _) = hazard_scope(&state.pool, id).await?;
+    if let Some(lab_id) = lab_id {
+        require_lab_manager(&state.pool, &actor, lab_id).await?;
+    } else {
+        require_admin(&actor)?;
+    }
     let row = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards set status = $1, updated_at = now()
         where id = $2
-        returning id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
+        returning id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
     .bind(payload.status)
@@ -1694,7 +2267,7 @@ mod tests {
         let admin_id: i64 = sqlx::query_scalar(
             r#"
             insert into users (username, display_name, email, role, auth_provider, password_hash)
-            values ('admin', 'Admin', 'admin@example.com', 'admin', 'password', $1)
+            values ('admin', 'Admin', 'admin@example.com', 'system_admin', 'password', $1)
             returning id
             "#,
         )
@@ -1704,7 +2277,7 @@ mod tests {
         let researcher_id: i64 = sqlx::query_scalar(
             r#"
             insert into users (username, display_name, email, role, auth_provider, password_hash)
-            values ('researcher', 'Researcher', 'researcher@example.com', 'researcher', 'password', $1)
+            values ('researcher', 'Researcher', 'researcher@example.com', 'lab_member', 'password', $1)
             returning id
             "#,
         )
@@ -1824,7 +2397,7 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(login["user"]["role"], "admin");
+        assert_eq!(login["user"]["role"], "system_admin");
 
         let (status, _) = json_request(
             &ctx.app,
@@ -1853,7 +2426,7 @@ mod tests {
                 "username": managed_username,
                 "display_name": "Managed Researcher",
                 "email": format!("{}@example.com", ctx.schema),
-                "role": "researcher",
+                "role": "lab_member",
                 "auth_provider": "password",
                 "department": "公共实验平台",
                 "password": "weak"
@@ -1871,7 +2444,7 @@ mod tests {
                 "username": managed_username,
                 "display_name": "Managed Researcher",
                 "email": format!("{}@example.com", ctx.schema),
-                "role": "researcher",
+                "role": "lab_member",
                 "auth_provider": "password",
                 "department": "公共实验平台",
                 "password": "ManagedStrong123!"
@@ -1879,12 +2452,12 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(managed_user["role"], "researcher");
+        assert_eq!(managed_user["role"], "lab_member");
 
         let (status, users) = request(
             &ctx.app,
             Method::GET,
-            "/api/v1/users?role=researcher",
+            "/api/v1/users?role=lab_member",
             Some(&ctx.admin_token),
             Body::empty(),
             None,
@@ -1940,6 +2513,40 @@ mod tests {
         .await?;
         assert_eq!(status, StatusCode::OK);
 
+        let (status, lab) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/labs",
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "code": format!("LAB-{}", ctx.schema),
+                "name": "有机化学实验室",
+                "location": "实验楼A-302",
+                "department": "化学学院",
+                "manager_user_id": ctx.researcher_id,
+                "contact": "lab@example.com",
+                "status": "active",
+                "description": "有机合成和试剂暂存实验室"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lab["name"], "有机化学实验室");
+
+        let (status, lab_member) = json_request(
+            &ctx.app,
+            Method::POST,
+            &format!("/api/v1/labs/{}/users", lab["id"]),
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "user_id": ctx.researcher_id,
+                "lab_role": "lab_member"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lab_member["lab_role"], "lab_member");
+
         let (status, incident) = json_request(
             &ctx.app,
             Method::POST,
@@ -1947,7 +2554,7 @@ mod tests {
             Some(&ctx.admin_token),
             serde_json::json!({
                 "title": "通风橱操作不当事故",
-                "lab_name": "有机化学实验室",
+                "lab_id": lab["id"],
                 "occurred_on": "2026-05-10",
                 "severity": "major",
                 "category": "chemical",
@@ -1967,7 +2574,7 @@ mod tests {
             Some(&ctx.admin_token),
             serde_json::json!({
                 "title": "化学品入门安全培训",
-                "target_role": "researcher",
+                "target_role": "lab_member",
                 "status": "published",
                 "starts_on": "2026-07-01",
                 "exam_required_score": 80
@@ -1999,7 +2606,7 @@ mod tests {
             serde_json::json!({
                 "asset_code": format!("HPLC-{}", ctx.schema),
                 "name": "高效液相色谱仪",
-                "lab_name": "分析测试中心",
+                "lab_id": lab["id"],
                 "status": "available",
                 "owner": "设备管理员"
             }),
@@ -2058,6 +2665,21 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(closed_repair["status"], "closed");
 
+        let (status, labs) = request(
+            &ctx.app,
+            Method::GET,
+            "/api/v1/labs?q=有机",
+            Some(&ctx.researcher_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            labs.as_array()
+                .is_some_and(|items| items.iter().any(|item| item["id"] == lab["id"]))
+        );
+
         let (status, issue_photo) = upload(
             &ctx.app,
             "/api/v1/hazards/upload/issue-photo",
@@ -2074,7 +2696,7 @@ mod tests {
             Some(&ctx.researcher_token),
             serde_json::json!({
                 "title": "试剂柜标签缺失",
-                "lab_name": "有机化学实验室",
+                "lab_id": lab["id"],
                 "category": "chemical",
                 "description": "三号试剂柜部分瓶体缺少中文标签。",
                 "reported_by": ctx.researcher_id,
@@ -2083,6 +2705,25 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
+
+        assert_eq!(hazard["lab_id"], lab["id"]);
+        assert_eq!(hazard["lab_name"], lab["name"]);
+
+        let (status, lab_hazards) = request(
+            &ctx.app,
+            Method::GET,
+            &format!("/api/v1/hazards?lab_id={}", lab["id"]),
+            Some(&ctx.admin_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            lab_hazards
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["id"] == hazard["id"]))
+        );
 
         let (status, claimed) = json_request(
             &ctx.app,
