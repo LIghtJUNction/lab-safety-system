@@ -26,6 +26,15 @@ pub struct UserCreate {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UserUpdate {
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+    pub role: Option<String>,
+    pub department: Option<String>,
+    pub is_active: Option<bool>,
+}
+
 #[derive(Debug, Serialize, FromRow)]
 pub struct Lab {
     pub id: i64,

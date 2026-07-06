@@ -210,10 +210,11 @@ GET `/api/v1/labs/{id}/users` 返回：
 
 ## 用户管理
 
-| 方法 | 路径         | 权限                                      | 说明 |
-|------|--------------|-------------------------------------------|------|
-| GET  | `/api/v1/users` | `system_admin` 或任意实验室的 `lab_admin` | 支持 `?q=` `?role=` 分页 |
-| POST | `/api/v1/users` | `system_admin`                            | 创建普通用户，role 只能是 `lab_member` 或 `visitor` |
+| 方法 | 路径 | 权限 | 说明 |
+|------|------|------|------|
+| GET | `/api/v1/users` | `system_admin` 或任意实验室的 `lab_admin` | 查询用户，支持 `?q=` `?role=` 分页 |
+| POST | `/api/v1/users` | `system_admin` | 创建普通用户，role 只能是 `lab_member` 或 `visitor` |
+| PATCH | `/api/v1/users/{id}` | `system_admin` | 更新普通用户资料、全局角色和启用状态 |
 
 创建示例（仅全局管理员可用）：
 
@@ -228,6 +229,20 @@ GET `/api/v1/labs/{id}/users` 返回：
   "password": "StrongMember123!"
 }
 ```
+
+更新示例：
+
+```json
+{
+  "display_name": "实验室访客01",
+  "email": "visitor01@example.com",
+  "role": "visitor",
+  "department": "化学学院",
+  "is_active": false
+}
+```
+
+`PATCH /users/{id}` 只能把普通用户角色设置为 `lab_member` 或 `visitor`。系统管理员账号的角色和启用状态必须通过 CLI 管理，防止破坏唯一系统管理员约束。
 
 ## 安全隐患（必须绑定实验室）
 

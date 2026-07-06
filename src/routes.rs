@@ -198,6 +198,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/me", get(auth_me))
         .route("/api/v1/auth/my-labs", get(my_labs))
         .route("/api/v1/users", get(list_users).post(create_user))
+        .route("/api/v1/users/{id}", patch(update_user))
         .route("/api/v1/labs", get(list_labs).post(create_lab))
         .route("/api/v1/labs/{id}", get(get_lab).patch(update_lab))
         .route(
@@ -1141,6 +1142,63 @@ async fn list_users(
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(users))
+}
+
+async fn update_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Json(payload): Json<UserUpdate>,
+) -> Result<Json<User>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_admin(&actor)?;
+
+    if let Some(role) = payload.role.as_deref() {
+        validate_global_role(role)?;
+    }
+
+    let current_role = sqlx::query_scalar::<_, String>("select role from users where id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| ApiError::not_found("User not found"))?;
+
+    if matches!(current_role.as_str(), ROLE_SYSTEM_ADMIN | "super_admin") {
+        if payload.role.is_some() || payload.is_active == Some(false) {
+            return Err(ApiError::bad_request(
+                "System administrator role and active status must be managed by CLI",
+            ));
+        }
+    }
+
+    if actor.id == id && payload.is_active == Some(false) {
+        return Err(ApiError::bad_request(
+            "Cannot deactivate the current authenticated user",
+        ));
+    }
+
+    let user = sqlx::query_as::<_, User>(
+        r#"
+        update users
+        set display_name = coalesce($1, display_name),
+            email = coalesce($2, email),
+            role = coalesce($3, role),
+            department = coalesce($4, department),
+            is_active = coalesce($5, is_active),
+            updated_at = now()
+        where id = $6
+        returning id, username, display_name, email, role, auth_provider, department, is_active, created_at
+        "#,
+    )
+    .bind(payload.display_name)
+    .bind(payload.email)
+    .bind(payload.role)
+    .bind(payload.department)
+    .bind(payload.is_active)
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(user))
 }
 
 async fn create_lab(
@@ -2612,6 +2670,35 @@ mod tests {
                 .iter()
                 .any(|user| user["username"] == managed_user["username"])
         }));
+
+        let (status, _) = json_request(
+            &ctx.app,
+            Method::PATCH,
+            &format!("/api/v1/users/{}", managed_user["id"]),
+            Some(&ctx.researcher_token),
+            serde_json::json!({
+                "display_name": "Unauthorized Update"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, updated_user) = json_request(
+            &ctx.app,
+            Method::PATCH,
+            &format!("/api/v1/users/{}", managed_user["id"]),
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "display_name": "Managed Visitor",
+                "role": "visitor",
+                "is_active": false
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated_user["display_name"], "Managed Visitor");
+        assert_eq!(updated_user["role"], "visitor");
+        assert_eq!(updated_user["is_active"], false);
 
         let (status, regulation_upload) = upload(
             &ctx.app,
