@@ -1,18 +1,27 @@
-FROM python:3.12-slim
+FROM rust:1-slim AS build
 
 LABEL org.opencontainers.image.title="lab-safety-system"
-LABEL org.opencontainers.image.description="Backend image scaffold for the Laboratory Safety Management Information System"
+LABEL org.opencontainers.image.description="Rust backend for the Laboratory Safety Management Information System"
 LABEL org.opencontainers.image.source="https://github.com/LIghtJUNction/lab-safety-system"
 
 WORKDIR /app
 
-RUN groupadd --system app && useradd --system --gid app --create-home app
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release
 
-COPY pyproject.toml README.md LICENSE ./
-RUN pip install --no-cache-dir .
+FROM debian:bookworm-slim
 
-COPY app ./app
-RUN mkdir -p /app/uploads && chown -R app:app /app/uploads
+WORKDIR /app
+
+RUN groupadd --system app && useradd --system --gid app --create-home app \
+    && mkdir -p /app/uploads \
+    && chown -R app:app /app/uploads \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /app/target/release/lab-safety-system /usr/local/bin/lab-safety-system
 
 ENV APP_ENV=production
 ENV APP_HOST=0.0.0.0
@@ -22,6 +31,6 @@ EXPOSE 8080
 
 USER app
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/ready', timeout=3).read()"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD /usr/local/bin/lab-safety-system --healthcheck
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["lab-safety-system"]

@@ -2,6 +2,7 @@
 # will have compiled files and executables
 debug
 target
+.tokensave/
 .venv/
 __pycache__/
 .pytest_cache/
