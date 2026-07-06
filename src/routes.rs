@@ -5,7 +5,7 @@ use axum::{
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -204,6 +204,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/labs/{id}/users",
             get(list_lab_users).post(assign_lab_user),
         )
+        .route("/api/v1/labs/{id}/users/{user_id}", delete(remove_lab_user))
         .route(
             "/api/v1/regulations",
             get(list_regulations).post(create_regulation),
@@ -1329,6 +1330,30 @@ async fn assign_lab_user(
     Ok(Json(assigned))
 }
 
+async fn remove_lab_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath((id, user_id)): AxumPath<(i64, i64)>,
+) -> Result<StatusCode, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_lab_manager(&state.pool, &actor, id).await?;
+    let deleted = sqlx::query(
+        r#"
+        delete from lab_users
+        where lab_id = $1 and user_id = $2
+        "#,
+    )
+    .bind(id)
+    .bind(user_id)
+    .execute(&state.pool)
+    .await?;
+    if deleted.rows_affected() == 0 {
+        Err(ApiError::not_found("Lab user not found"))
+    } else {
+        Ok(StatusCode::NO_CONTENT)
+    }
+}
+
 async fn create_regulation(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1989,8 +2014,12 @@ async fn update_hazard_status(
 async fn dashboard_stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<ListQuery>,
 ) -> Result<Json<DashboardStats>, ApiError> {
-    require_user(&state, &headers).await?;
+    let actor = require_user(&state, &headers).await?;
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    }
     let total: i64 = sqlx::query("select count(*)::bigint as count from exam_results")
         .fetch_one(&state.pool)
         .await?
@@ -2000,16 +2029,55 @@ async fn dashboard_stats(
             .fetch_one(&state.pool)
             .await?
             .get("count");
-    let open_repairs: i64 =
-        sqlx::query("select count(*)::bigint as count from repair_tickets where status = 'open'")
-            .fetch_one(&state.pool)
-            .await?
-            .get("count");
+    let incident_count: i64 = sqlx::query(
+        r#"
+        select count(*)::bigint as count
+        from incident_cases
+        where ($1::boolean or exists(select 1 from lab_users where lab_users.lab_id = incident_cases.lab_id and lab_users.user_id = $2))
+          and ($3::bigint is null or lab_id = $3)
+        "#,
+    )
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
+    .fetch_one(&state.pool)
+    .await?
+    .get("count");
+    let equipment_count: i64 = sqlx::query(
+        r#"
+        select count(*)::bigint as count
+        from equipment
+        where ($1::boolean or exists(select 1 from lab_users where lab_users.lab_id = equipment.lab_id and lab_users.user_id = $2))
+          and ($3::bigint is null or lab_id = $3)
+        "#,
+    )
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
+    .fetch_one(&state.pool)
+    .await?
+    .get("count");
+    let open_repairs: i64 = sqlx::query(
+        r#"
+        select count(*)::bigint as count
+        from repair_tickets
+        join equipment on equipment.id = repair_tickets.equipment_id
+        where repair_tickets.status = 'open'
+          and ($1::boolean or exists(select 1 from lab_users where lab_users.lab_id = equipment.lab_id and lab_users.user_id = $2))
+          and ($3::bigint is null or equipment.lab_id = $3)
+        "#,
+    )
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
+    .fetch_one(&state.pool)
+    .await?
+    .get("count");
     Ok(Json(DashboardStats {
         regulation_count: table_count(&state.pool, "regulations").await?,
-        incident_count: table_count(&state.pool, "incident_cases").await?,
+        incident_count,
         training_count: table_count(&state.pool, "trainings").await?,
-        equipment_count: table_count(&state.pool, "equipment").await?,
+        equipment_count,
         open_repair_count: open_repairs,
         exam_pass_rate: if total == 0 {
             0.0
@@ -2022,11 +2090,15 @@ async fn dashboard_stats(
 async fn incident_analytics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<ListQuery>,
 ) -> Result<Json<IncidentAnalytics>, ApiError> {
-    require_user(&state, &headers).await?;
+    let actor = require_user(&state, &headers).await?;
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    }
     Ok(Json(IncidentAnalytics {
-        by_category: count_buckets(&state.pool, "select category as name, count(*)::bigint as count from incident_cases group by category order by count desc").await?,
-        by_severity: count_buckets(&state.pool, "select severity as name, count(*)::bigint as count from incident_cases group by severity order by count desc").await?,
+        by_category: count_incident_buckets(&state.pool, "category", &actor, query.lab_id).await?,
+        by_severity: count_incident_buckets(&state.pool, "severity", &actor, query.lab_id).await?,
     }))
 }
 
@@ -2052,19 +2124,16 @@ async fn regulation_analytics(
 async fn hazard_analytics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<ListQuery>,
 ) -> Result<Json<HazardAnalytics>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    if is_admin(&actor) {
-        Ok(Json(HazardAnalytics {
-            by_status: count_buckets(&state.pool, "select status as name, count(*)::bigint as count from safety_hazards group by status order by count desc").await?,
-            by_category: count_buckets(&state.pool, "select category as name, count(*)::bigint as count from safety_hazards group by category order by count desc").await?,
-        }))
-    } else {
-        Ok(Json(HazardAnalytics {
-            by_status: count_buckets_for_user(&state.pool, "status", actor.id).await?,
-            by_category: count_buckets_for_user(&state.pool, "category", actor.id).await?,
-        }))
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
     }
+    Ok(Json(HazardAnalytics {
+        by_status: count_hazard_buckets(&state.pool, "status", &actor, query.lab_id).await?,
+        by_category: count_hazard_buckets(&state.pool, "category", &actor, query.lab_id).await?,
+    }))
 }
 
 async fn upload_regulation_file(
@@ -2149,21 +2218,95 @@ async fn count_buckets(pool: &PgPool, sql: &str) -> Result<Vec<CountBucket>, Api
         .collect())
 }
 
-async fn count_buckets_for_user(
+async fn count_incident_buckets(
     pool: &PgPool,
     column: &'static str,
-    user_id: i64,
+    actor: &AuthUser,
+    lab_id: Option<i64>,
 ) -> Result<Vec<CountBucket>, ApiError> {
     let sql = match column {
-        "status" => {
-            "select status as name, count(*)::bigint as count from safety_hazards where reported_by = $1 or responsible_user_id = $1 group by status order by count desc"
-        }
         "category" => {
-            "select category as name, count(*)::bigint as count from safety_hazards where reported_by = $1 or responsible_user_id = $1 group by category order by count desc"
+            r#"
+            select category as name, count(*)::bigint as count
+            from incident_cases
+            where ($1::boolean or exists(select 1 from lab_users where lab_users.lab_id = incident_cases.lab_id and lab_users.user_id = $2))
+              and ($3::bigint is null or lab_id = $3)
+            group by category
+            order by count desc
+            "#
+        }
+        "severity" => {
+            r#"
+            select severity as name, count(*)::bigint as count
+            from incident_cases
+            where ($1::boolean or exists(select 1 from lab_users where lab_users.lab_id = incident_cases.lab_id and lab_users.user_id = $2))
+              and ($3::bigint is null or lab_id = $3)
+            group by severity
+            order by count desc
+            "#
         }
         _ => return Err(ApiError::bad_request("Unsupported analytics column")),
     };
-    let rows = sqlx::query(sql).bind(user_id).fetch_all(pool).await?;
+    let rows = sqlx::query(sql)
+        .bind(is_system_admin(actor))
+        .bind(actor.id)
+        .bind(lab_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| CountBucket {
+            name: row.get("name"),
+            count: row.get("count"),
+        })
+        .collect())
+}
+
+async fn count_hazard_buckets(
+    pool: &PgPool,
+    column: &'static str,
+    actor: &AuthUser,
+    lab_id: Option<i64>,
+) -> Result<Vec<CountBucket>, ApiError> {
+    let sql = match column {
+        "status" => {
+            r#"
+            select status as name, count(*)::bigint as count
+            from safety_hazards
+            where (
+                $1::boolean
+                or reported_by = $2
+                or responsible_user_id = $2
+                or exists(select 1 from lab_users where lab_users.lab_id = safety_hazards.lab_id and lab_users.user_id = $2)
+              )
+              and ($3::bigint is null or lab_id = $3)
+            group by status
+            order by count desc
+            "#
+        }
+        "category" => {
+            r#"
+            select category as name, count(*)::bigint as count
+            from safety_hazards
+            where (
+                $1::boolean
+                or reported_by = $2
+                or responsible_user_id = $2
+                or exists(select 1 from lab_users where lab_users.lab_id = safety_hazards.lab_id and lab_users.user_id = $2)
+              )
+              and ($3::bigint is null or lab_id = $3)
+            group by category
+            order by count desc
+            "#
+        }
+        _ => return Err(ApiError::bad_request("Unsupported analytics column")),
+    };
+    let rows = sqlx::query(sql)
+        .bind(is_system_admin(actor))
+        .bind(actor.id)
+        .bind(lab_id)
+        .fetch_all(pool)
+        .await?;
     Ok(rows
         .into_iter()
         .map(|row| CountBucket {
@@ -2547,6 +2690,47 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(lab_member["lab_role"], "lab_member");
 
+        let (status, lab_visitor) = json_request(
+            &ctx.app,
+            Method::POST,
+            &format!("/api/v1/labs/{}/users", lab["id"]),
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "user_id": managed_user["id"],
+                "lab_role": "visitor"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lab_visitor["lab_role"], "visitor");
+
+        let (status, lab_users) = request(
+            &ctx.app,
+            Method::GET,
+            &format!("/api/v1/labs/{}/users", lab["id"]),
+            Some(&ctx.admin_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(lab_users.as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item["user_id"] == managed_user["id"] && item["lab_role"] == "visitor")
+        }));
+
+        let (status, _) = request(
+            &ctx.app,
+            Method::DELETE,
+            &format!("/api/v1/labs/{}/users/{}", lab["id"], managed_user["id"]),
+            Some(&ctx.admin_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
         let (status, incident) = json_request(
             &ctx.app,
             Method::POST,
@@ -2778,6 +2962,55 @@ mod tests {
         .await?;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(closed_hazard["status"], "closed");
+
+        let (status, lab_dashboard) = request(
+            &ctx.app,
+            Method::GET,
+            &format!("/api/v1/analytics/dashboard?lab_id={}", lab["id"]),
+            Some(&ctx.researcher_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lab_dashboard["incident_count"], 1);
+        assert_eq!(lab_dashboard["equipment_count"], 1);
+
+        let (status, lab_incident_analytics) = request(
+            &ctx.app,
+            Method::GET,
+            &format!("/api/v1/analytics/incidents?lab_id={}", lab["id"]),
+            Some(&ctx.researcher_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            lab_incident_analytics["by_category"]
+                .as_array()
+                .is_some_and(|items| items
+                    .iter()
+                    .any(|item| item["name"] == "chemical" && item["count"] == 1))
+        );
+
+        let (status, lab_hazard_analytics) = request(
+            &ctx.app,
+            Method::GET,
+            &format!("/api/v1/analytics/hazards?lab_id={}", lab["id"]),
+            Some(&ctx.researcher_token),
+            Body::empty(),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            lab_hazard_analytics["by_status"]
+                .as_array()
+                .is_some_and(|items| items
+                    .iter()
+                    .any(|item| item["name"] == "closed" && item["count"] == 1))
+        );
 
         for path in [
             "/api/v1/regulations?q=危险化学品",

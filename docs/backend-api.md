@@ -1,42 +1,41 @@
 # 后端功能与前端对接指南
 
-本文档描述 Rust 后端当前提供的 API。主仓库是后端工程，前端以 `frontend/` Git 子模块维护。
+本文档描述 Rust 后端当前提供的 API（多实验室 + 实验室内角色模型）。主仓库是后端工程，前端以 `frontend/` 目录维护。
 
 ## 基本约定
 
 - API 前缀：`/api/v1`
 - 数据格式：除文件上传外，请求和响应均为 JSON。
 - 鉴权方式：受保护接口使用 `Authorization: Bearer <access_token>`。
-- 错误格式：`{ "detail": "错误说明" }`。
+- 错误格式：`{ "detail": "错误说明" }`（403 表示权限不足，404 资源不存在，400 参数错误）。
 - 时间格式：`DateTime<Utc>` 使用 ISO 8601 字符串，日期字段使用 `YYYY-MM-DD`。
 - 上传文件：使用 `multipart/form-data`，文件字段名固定为 `file`。
+- 列表接口统一支持分页：`limit`、`offset`；搜索 `q`；多数支持 `lab_id` 过滤。
 
 ## 角色模型
 
 系统按“多实验室 + 实验室内角色”设计。
 
-| 角色值 | 中文含义 | 作用范围 | 说明 |
-| --- | --- | --- | --- |
-| `system_admin` | 实验室管理系统管理员 | 全局 | 唯一账号，维护系统、实验室、用户和全局数据。只能通过 CLI 初始化。 |
-| `lab_admin` | 实验室管理员 | 单个实验室 | 管理自己实验室的成员、设备、事故、维修和隐患闭环。 |
-| `lab_member` | 实验室成员 | 单个实验室 | 可上报隐患、预约设备、提交维修和处理自己负责的整改。 |
-| `visitor` | 访客 | 单个实验室 | 最小权限，主要用于只读访问。 |
+| 角色值         | 中文含义             | 作用范围   | 说明 |
+|----------------|----------------------|------------|------|
+| `system_admin` | 实验室管理系统管理员 | 全局       | 唯一账号，维护系统、实验室、用户和全局数据。只能通过 CLI 初始化。 |
+| `lab_admin`    | 实验室管理员         | 单个实验室 | 管理本实验室成员、设备、事故、维修、隐患闭环。 |
+| `lab_member`   | 实验室成员           | 单个实验室 | 可上报隐患、预约设备、提交维修、处理自己负责的整改。 |
+| `visitor`      | 访客                 | 单个实验室 | 最小权限，主要用于只读访问。 |
 
 实现方式：
 
-- `users.role` 保存全局角色。系统管理员是 `system_admin`；普通账号默认是 `lab_member` 或 `visitor`。
-- `lab_users.lab_role` 保存用户在某个实验室里的角色，可为 `lab_admin`、`lab_member`、`visitor`。
-- 同一个用户可以在多个实验室拥有不同角色。
-- 后端兼容旧库中的 `super_admin` 读取，但新数据应使用 `system_admin`。
+- `users.role` 保存**全局角色**（只有 `system_admin` 拥有跨实验室能力）。
+- `lab_users.lab_role` 保存用户在**某个实验室**里的角色（`lab_admin` / `lab_member` / `visitor`）。
+- 同一个用户可同时属于多个实验室，拥有不同 `lab_role`。
+- 后端兼容旧的 `super_admin`，但新系统使用 `system_admin`。
 
-前端对接流程（推荐）：
+**关键接口组合（前端必须先调）：**
 
-1. 登录后立即调用 `GET /api/v1/auth/me` 获取全局 `role`。
-2. 调用 `GET /api/v1/auth/my-labs` 获取用户可访问的实验室列表及在每个实验室的 `lab_role`。
-3. 前端保存“当前选中实验室”。
-4. 根据「全局 role + 当前实验室 lab_role」动态渲染菜单、按钮和操作权限。
-5. `system_admin` 可看到实验室管理、用户管理等系统入口，并可操作任意实验室数据。
-6. 普通角色严格限定在本实验室内。
+1. `GET /api/v1/auth/me` → 获取全局 `role`
+2. `GET /api/v1/auth/my-labs` → 获取可访问实验室 + **每个实验室的 role**
+
+前端用「全局 role + 当前选中 lab 的 role」来决定页面、菜单、按钮和能力。
 
 ## 登录与当前用户
 
@@ -54,30 +53,175 @@ Content-Type: application/json
 }
 ```
 
+响应示例（AuthSession）：
+
+```json
+{
+  "access_token": "...",
+  "token_type": "bearer",
+  "expires_in": 3600,
+  "user": {
+    "id": 1,
+    "username": "admin",
+    "display_name": "实验室管理系统管理员",
+    "email": "admin@example.com",
+    "role": "system_admin",
+    "auth_provider": "password"
+  }
+}
+```
+
 ```http
 GET /api/v1/auth/me
 Authorization: Bearer <access_token>
 ```
 
-SSO / OAuth 回调地址：
+返回 `AuthUser`（同上 user 字段）。
+
+SSO / OAuth 回调：
 
 - `GET /api/v1/auth/sso/callback`
 - `GET /api/v1/auth/oauth/callback`
 
-上游身份系统传入 `username`、`email`、`display_name`、`role`、`department`、`exp`、`sig`。`role` 只能是 `lab_member` 或 `visitor`，不能通过联邦登录创建系统管理员。
+## 获取我的实验室与角色（核心！）
+
+登录成功后**必须立即调用**：
+
+```http
+GET /api/v1/auth/my-labs
+Authorization: Bearer <access_token>
+```
+
+响应：`LabMembership[]`
+
+```json
+[
+  {
+    "lab_id": 1,
+    "lab_name": "有机化学实验室",
+    "role": "lab_admin"
+  },
+  {
+    "lab_id": 2,
+    "lab_name": "物理实验室",
+    "role": "lab_member"
+  }
+]
+```
+
+**system_admin 特殊行为**：返回系统中**所有实验室**，每个的 `role` 都是 `"system_admin"`。
+
+前端用法：
+
+- 保存 `labMemberships`
+- 计算 `currentLabRole = (user.role === 'system_admin') ? 'system_admin' : memberships.find(m => m.lab_id === selectedLabId)?.role`
+- 没有选中实验室或无权限时 role 为 null
+
+## 实验室管理（仅 system_admin 可创建，lab_admin 可查看自己）
+
+| 方法 | 路径                    | 权限                          | 说明 |
+|------|-------------------------|-------------------------------|------|
+| GET  | `/api/v1/labs`          | 登录用户                      | `system_admin` 返回全部；其他人只返回自己有成员关系的实验室。支持 `?q=` `?status=` |
+| POST | `/api/v1/labs`          | `system_admin`                | 创建实验室 |
+| GET  | `/api/v1/labs/{id}`     | 有该实验室访问权的用户        | 详情 |
+| PATCH| `/api/v1/labs/{id}`     | `system_admin` 或该 lab 的 `lab_admin` | 更新 |
+| GET  | `/api/v1/labs/{id}/users` | 有该实验室访问权的用户     | 实验室成员列表（含全局角色） |
+| POST | `/api/v1/labs/{id}/users` | `system_admin` 或该 lab 的 `lab_admin` | 分配/更新实验室内角色 |
+| DELETE | `/api/v1/labs/{id}/users/{user_id}` | `system_admin` 或该 lab 的 `lab_admin` | 移除实验室成员关系 |
+
+### Lab 对象（响应）
+
+```json
+{
+  "id": 1,
+  "code": "LAB-CHEM-001",
+  "name": "有机化学实验室",
+  "location": "实验楼A-302",
+  "department": "化学学院",
+  "manager_user_id": 3,
+  "contact": "chem-lab@example.com",
+  "status": "active",
+  "description": "有机合成与试剂管理实验室",
+  "created_at": "2026-01-15T08:00:00Z"
+}
+```
+
+状态值：`active`、`inactive`、`maintenance`。
+
+### 创建实验室（POST /api/v1/labs）
+
+```json
+{
+  "code": "LAB-PHYS-002",
+  "name": "物理实验室",
+  "location": "实验楼B-105",
+  "department": "物理学院",
+  "manager_user_id": 5,
+  "contact": "phys@example.com",
+  "status": "active",
+  "description": "力学与光学实验"
+}
+```
+
+### 更新实验室（PATCH /api/v1/labs/1）
+
+支持部分字段：
+
+```json
+{
+  "name": "有机化学与高分子实验室",
+  "status": "maintenance",
+  "description": "暂停使用中"
+}
+```
+
+### 实验室成员列表与分配
+
+GET `/api/v1/labs/{id}/users` 返回：
+
+```json
+[
+  {
+    "id": 12,
+    "lab_id": 1,
+    "user_id": 5,
+    "lab_role": "lab_admin",
+    "username": "labadmin05",
+    "display_name": "张管理员",
+    "email": "z@example.com",
+    "global_role": "lab_member",
+    "created_at": "2026-03-01T10:00:00Z"
+  }
+]
+```
+
+注意：**global_role**（users.role）与 **lab_role**（lab_users.lab_role）要**分开显示**。
+
+分配/修改角色（POST）：
+
+```json
+{
+  "user_id": 7,
+  "lab_role": "lab_member"
+}
+```
+
+合法 lab_role：`lab_admin`、`lab_member`、`visitor`。
 
 ## 用户管理
 
-| 方法 | 路径 | 权限 | 说明 |
-| --- | --- | --- | --- |
-| `GET` | `/users` | `system_admin`，或任意实验室 `lab_admin` | 查询用户，支持 `q`、`role`、`limit`、`offset` |
-| `POST` | `/users` | `system_admin` | 创建普通账号，角色只能是 `lab_member` 或 `visitor` |
+| 方法 | 路径         | 权限                                      | 说明 |
+|------|--------------|-------------------------------------------|------|
+| GET  | `/api/v1/users` | `system_admin` 或任意实验室的 `lab_admin` | 支持 `?q=` `?role=` 分页 |
+| POST | `/api/v1/users` | `system_admin`                            | 创建普通用户，role 只能是 `lab_member` 或 `visitor` |
+
+创建示例（仅全局管理员可用）：
 
 ```json
 {
   "username": "member01",
   "display_name": "实验室成员01",
-  "email": "member01@example.com",
+  "email": "m01@example.com",
   "role": "lab_member",
   "auth_provider": "password",
   "department": "化学学院",
@@ -85,151 +229,200 @@ SSO / OAuth 回调地址：
 }
 ```
 
-## 实验室管理
+## 安全隐患（必须绑定实验室）
 
-| 方法 | 路径 | 权限 | 说明 |
-| --- | --- | --- | --- |
-| `GET` | `/labs` | 登录用户 | `system_admin` 返回全部；其他用户只返回自己有关联角色的实验室。支持 `q`、`status`、`limit`、`offset` |
-| `POST` | `/labs` | `system_admin` | 创建实验室 |
-| `GET` | `/labs/{id}` | 实验室可访问用户 | 查询实验室详情 |
-| `PATCH` | `/labs/{id}` | `system_admin` 或该实验室 `lab_admin` | 更新实验室 |
-| `GET` | `/labs/{id}/users` | 实验室可访问用户 | 查询实验室成员关系 |
-| `POST` | `/labs/{id}/users` | `system_admin` 或该实验室 `lab_admin` | 分配或更新实验室内角色 |
+**关键变更**：隐患现在强制使用 `lab_id`（而非自由 lab_name）。
 
-```json
-{
-  "code": "LAB-CHEM-001",
-  "name": "有机化学实验室",
-  "location": "实验楼A-302",
-  "department": "化学学院",
-  "manager_user_id": 2,
-  "contact": "lab@example.com",
-  "status": "active",
-  "description": "有机合成和试剂暂存实验室"
-}
-```
+| 方法   | 路径                              | 权限（示例）                                      | 说明 |
+|--------|-----------------------------------|---------------------------------------------------|------|
+| GET    | `/api/v1/hazards?lab_id=1`        | 登录 + 有实验室访问权                             | 支持 `lab_id`、`q`、`status`、`responsible_user_id` 等过滤 |
+| POST   | `/api/v1/hazards`                 | `system_admin` 或该实验室 `lab_admin`/`lab_member` | 上报隐患（必须带 lab_id） |
+| POST   | `/api/v1/hazards/{id}/claim`      | 同上 + 本人或 lab_admin                           | 认领责任人 |
+| POST   | `/api/v1/hazards/{id}/remediation`| 责任人 / lab_admin / system_admin                 | 提交整改 |
+| PATCH  | `/api/v1/hazards/{id}/status`     | lab_admin 或 system_admin                         | 状态流转 |
+| POST   | `/api/v1/hazards/upload/issue-photo`      | 登录用户 | 上传问题照片 |
+| POST   | `/api/v1/hazards/upload/remediation-photo`| 登录用户 | 上传整改照片 |
 
-实验室状态：`active`、`inactive`、`maintenance`。
-
-分配实验室角色：
+### 创建隐患（必须传 lab_id）
 
 ```json
 {
-  "user_id": 2,
-  "lab_role": "lab_admin"
-}
-```
-
-## 安全隐患
-
-| 方法 | 路径 | 权限 | 说明 |
-| --- | --- | --- | --- |
-| `GET` | `/hazards` | 登录用户 | 支持 `lab_id`、`q`、`status`、`responsible_user_id`、`reported_by`、`limit`、`offset` |
-| `POST` | `/hazards` | `system_admin`、该实验室 `lab_admin`、该实验室 `lab_member` | 上报隐患 |
-| `POST` | `/hazards/{id}/claim` | `system_admin`、该实验室 `lab_admin`、本人认领 | 认领责任人 |
-| `POST` | `/hazards/{id}/remediation` | `system_admin`、该实验室 `lab_admin`、责任人 | 提交整改 |
-| `PATCH` | `/hazards/{id}/status` | `system_admin` 或该实验室 `lab_admin` | 更新状态 |
-| `POST` | `/hazards/upload/issue-photo` | 登录用户 | 上传问题照片 |
-| `POST` | `/hazards/upload/remediation-photo` | 登录用户 | 上传整改照片 |
-
-```json
-{
-  "title": "试剂柜标签缺失",
   "lab_id": 1,
+  "title": "试剂柜标签缺失",
   "category": "chemical",
   "description": "三号试剂柜部分瓶体缺少中文标签。",
-  "reported_by": 2,
-  "issue_photo_url": "/uploads/hazards/issue/example.jpg"
+  "reported_by": 7,
+  "issue_photo_url": "/uploads/hazards/issue/xxx.png"
 }
 ```
 
-## 事故案例
-
-| 方法 | 路径 | 权限 | 说明 |
-| --- | --- | --- | --- |
-| `GET` | `/incidents` | 登录用户 | 支持 `lab_id`、`q`、`limit`、`offset`；非系统管理员只返回自己可访问实验室的数据。 |
-| `POST` | `/incidents` | `system_admin` 或该实验室 `lab_admin` | 创建事故案例。 |
-| `POST` | `/incidents/upload` | `system_admin` | 上传事故附件。 |
+**响应**（SafetyHazard）包含 `lab_id` + `lab_name`：
 
 ```json
 {
-  "title": "通风橱操作不当事故",
+  "id": 42,
   "lab_id": 1,
+  "lab_name": "有机化学实验室",
+  "title": "...",
+  "category": "chemical",
+  "description": "...",
+  "status": "open",
+  "reported_by": 7,
+  "responsible_user_id": null,
+  "issue_photo_url": "/uploads/...",
+  "remediation_photo_url": null,
+  "remediation_note": null,
+  "created_at": "..."
+}
+```
+
+列表查询推荐始终带 `?lab_id=当前选中实验室ID`。
+
+## 事故案例、设备、预约、维修
+
+这些资源也支持 `lab_id` 过滤与权限收口：
+
+- `GET/POST /api/v1/incidents`（支持 `?lab_id=`）
+- `GET/POST /api/v1/equipment`（支持 `?lab_id=`）
+- `GET/POST /api/v1/equipment-bookings`
+- `GET/POST/PATCH /api/v1/repair-tickets`
+
+创建时优先传 `lab_id`，后端会解析并校验权限。非 system_admin 时必须有对应实验室访问权。
+
+示例（incident）：
+
+```json
+{
+  "lab_id": 1,
+  "title": "通风橱操作不当事故",
   "occurred_on": "2026-05-10",
   "severity": "major",
   "category": "chemical",
-  "root_cause": "未按规程开启通风设备",
-  "corrective_actions": "重新培训并增加班前检查",
-  "file_url": "/uploads/incidents/example.txt"
+  "root_cause": "...",
+  "corrective_actions": "..."
 }
 ```
 
-## 设备、预约和维修
+## 法规条例与培训（全局）
 
-| 方法 | 路径 | 权限 | 说明 |
-| --- | --- | --- | --- |
-| `GET` | `/equipment` | 登录用户 | 支持 `lab_id`、`q`、`status`、`limit`、`offset`；非系统管理员只返回可访问实验室的设备。 |
-| `POST` | `/equipment` | `system_admin` 或该实验室 `lab_admin` | 创建设备。 |
-| `GET` | `/equipment-bookings` | 登录用户 | 支持 `lab_id`；系统管理员返回全部，其他用户返回本人或可访问实验室的预约。 |
-| `POST` | `/equipment-bookings` | 该实验室 `lab_admin` 或 `lab_member` | 创建设备预约，访客不可预约。 |
-| `GET` | `/repair-tickets` | 登录用户 | 支持 `lab_id`；系统管理员返回全部，其他用户返回本人或可访问实验室的维修单。 |
-| `POST` | `/repair-tickets` | 该实验室 `lab_admin` 或 `lab_member` | 提交维修单，访客不可提交。 |
-| `PATCH` | `/repair-tickets/{id}` | `system_admin` 或该实验室 `lab_admin` | 更新维修单状态。 |
+- 法规：`GET/POST /api/v1/regulations`、`POST /regulations/upload`（仅 system_admin 创建）
+- 培训：`GET/POST /api/v1/trainings`、`GET/POST /api/v1/exam-results`（创建培训仅 system_admin）
 
-```json
-{
-  "asset_code": "HPLC-001",
-  "name": "高效液相色谱仪",
-  "lab_id": 1,
-  "status": "available",
-  "owner": "设备管理员"
+## 统计分析
+
+- `GET /api/v1/analytics/dashboard`
+- `GET /api/v1/analytics/hazards`
+- `GET /api/v1/analytics/incidents`
+- `GET /api/v1/analytics/regulations`
+
+统计接口支持 `?lab_id=当前选中实验室ID`。传入 `lab_id` 时会先校验当前用户是否可访问该实验室；不传时，`system_admin` 查看全部，非系统管理员按实验室成员关系和本人相关数据过滤可见范围。
+
+## 前端对接核心流程与建议
+
+### 推荐初始化流程（登录后）
+
+```ts
+const me = await api.me();
+const memberships = await api.myLabMemberships();
+
+const isSystemAdmin = me.role === 'system_admin';
+
+// 选择实验室：记住上次、本地存储、或默认第一个
+let selectedLabId = localStorage.getItem('selectedLabId') ? Number(...) : (memberships[0]?.lab_id ?? null);
+
+if (isSystemAdmin && !selectedLabId) {
+  const allLabs = await api.labs();
+  // system_admin 可以看到全部实验室
 }
+
+// 计算当前角色
+const currentLabRole = isSystemAdmin
+  ? 'system_admin'
+  : memberships.find(m => m.lab_id === selectedLabId)?.role ?? null;
 ```
 
-## 法规和培训
+### 权限判断（推荐实现，与后端一致）
 
-- 法规条例仍是全局资料：`GET/POST /regulations`，`POST /regulations/upload`。
-- 培训考核仍是全局资料：`GET/POST /trainings`，`GET/POST /exam-results`。
+```ts
+const canManageSystem = (user: AuthUser) => user.role === 'system_admin';
 
-## 前端对接建议
+const canManageLab = (user: AuthUser, labId: number | null, memberships: LabMembership[]) => {
+  if (!user || !labId) return false;
+  if (user.role === 'system_admin') return true;
+  return memberships.some(m => m.lab_id === labId && m.role === 'lab_admin');
+};
 
-1. 登录后调用 `GET /auth/me` 获取全局角色。
-2. 调用 `GET /labs` 获取当前用户可访问的实验室列表。
-3. 进入业务页面前，让用户选择当前实验室，并把 `lab_id` 放入隐患、事故、设备、预约和维修查询。
-4. 调用 `GET /labs/{id}/users` 判断当前用户在实验室里的 `lab_role`。
-5. 按角色渲染界面：
-   - `system_admin`：系统维护、实验室管理、用户管理、所有实验室数据。
-   - `lab_admin`：本实验室信息、成员、设备、事故、维修和隐患闭环。
-   - `lab_member`：本实验室隐患上报、预约设备、提交维修和处理自己负责的整改。
-   - `visitor`：只读或最小操作入口。
+const canCreateHazard = (user: AuthUser, labId: number | null, memberships: LabMembership[]) => {
+  if (!user || !labId) return false;
+  if (user.role === 'system_admin') return true;
+  return memberships.some(m => m.lab_id === labId && ['lab_admin', 'lab_member'].includes(m.role));
+};
 
-## 命令行用户管理
+const canClaimOrRemediate = (user: AuthUser, labId: number | null, memberships: LabMembership[]) =>
+  canCreateHazard(user, labId, memberships); // 简化示例，实际以后端 403 为准
 
-首次部署创建唯一系统管理员：
+const canViewLab = (user: AuthUser, labId: number | null, memberships: LabMembership[]) => {
+  if (!user || !labId) return false;
+  if (user.role === 'system_admin') return true;
+  return memberships.some(m => m.lab_id === labId);
+};
+```
+
+### 页面与数据调用规则
+
+- 所有隐患、设备、事故、维修列表**必须**带当前 `lab_id`（`api.hazards(q, selectedLabId)`）。
+- 创建隐患/设备/事故时**必须**传 `lab_id: selectedLabId`。
+- system_admin 可访问“实验室管理”页面（GET/POST labs + labs/{id}/users）。
+- 普通角色**不要**直接进入系统级页面。
+- 按钮可隐藏，但遇到 403 必须提示“无权限操作”（不要假装成功）。
+- 实验室切换后需要重新拉取对应 lab 的数据（hazards, members, stats 等）。
+- 全局资源（法规、培训）system_admin 创建，普通用户只读。
+
+### 动态导航与页面标题
+
+根据 `currentLabRole` 决定可见菜单：
+
+- `system_admin`：实验室管理、用户管理、全局概览、所有实验室数据
+- `lab_admin`：本实验室概览、成员管理、隐患管理、设备、统计
+- `lab_member`：上报隐患、我的整改、设备预约、培训
+- `visitor`：只读列表
+
+切换实验室时更新 URL（如 `/labs/${labId}/overview`）并持久化 `selectedLabId`。
+
+## 错误处理建议
+
+- 401/403：清除 token，提示重新登录或“无权限”。
+- 404：资源不存在或无该实验室访问权。
+- 后端返回 `detail` 字段，直接展示给用户。
+- 网络错误：提示检查后端地址（前端支持登录页高级配置 apiBase）。
+
+## 命令行用户与实验室管理
+
+首次部署创建系统管理员：
 
 ```bash
 lab-safety-system users bootstrap-super-admin --generate-password true
 ```
 
-创建普通用户：
+创建普通用户（需用 system_admin 身份）：
 
 ```bash
 lab-safety-system users create \
   --actor admin \
-  --actor-password '系统管理员强密码' \
+  --actor-password '...' \
   --username member01 \
-  --password 'MemberStrong123!' \
-  --email member01@example.com \
+  --password '...' \
+  --email ... \
   --role lab_member \
-  --display-name 实验室成员01
+  --display-name "..."
 ```
 
-重置密码：
+实验室目前主要通过前端或直接 SQL/后端接口管理（system_admin）。
 
-```bash
-lab-safety-system users set-password \
-  --actor admin \
-  --actor-password '系统管理员强密码' \
-  --username member01 \
-  --generate-password true
-```
+---
+
+**总结**：前端必须围绕以下链路重构：
+
+**当前用户 (me.role) → 可访问实验室列表 (my-labs) → 当前选中实验室 (selectedLabId) → 该实验室角色 (currentLabRole) → 带 lab_id 的接口调用 + 权限控制**
+
+后端已按实验室和角色收口权限，前端必须严格传递 `lab_id` 并以 403 为最终权限依据。文档中的示例均为当前实际后端行为。
