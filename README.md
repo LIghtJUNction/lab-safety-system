@@ -92,10 +92,12 @@ docker compose down
 
 ## 镜像发布
 
-本仓库通过 GitHub Actions 发布镜像到 GHCR：
+本仓库通过 GitHub Actions 同时发布镜像到 GHCR 和 Docker Hub：
 
 - 后端镜像：`ghcr.io/lightjunction/lab-safety-system-backend`
 - 前端镜像：`ghcr.io/lightjunction/lab-safety-system-frontend`
+- 后端镜像：`docker.io/lightjunction/lab-safety-system-backend`
+- 前端镜像：`docker.io/lightjunction/lab-safety-system-frontend`
 
 触发方式：
 
@@ -103,7 +105,12 @@ docker compose down
 - 推送 `v*` 标签：发布对应版本标签
 - 在 GitHub Actions 页面手动运行 `Docker Publish`，可选填写 `version` 作为额外镜像标签，例如 `v0.1.0`
 
-GHCR 发布不需要额外配置账号密码，工作流使用仓库自带的 `GITHUB_TOKEN`。当前仓库只需要确保 GitHub Actions 已启用，并允许工作流写入 Packages。
+GHCR 发布不需要额外配置账号密码，工作流使用仓库自带的 `GITHUB_TOKEN`。Docker Hub 发布需要在 GitHub 仓库 Secrets 中配置：
+
+- `DOCKERHUB_USERNAME`：Docker Hub 用户名或组织名
+- `DOCKERHUB_TOKEN`：Docker Hub access token
+
+当前仓库已配置 Docker Hub 发布所需 Secrets。工作流中已关闭镜像 attestation 上传，减少 Docker Hub 推送时的 registry 兼容性问题。
 
 也可以使用 GitHub CLI 手动触发一次发布：
 
@@ -111,7 +118,7 @@ GHCR 发布不需要额外配置账号密码，工作流使用仓库自带的 `G
 gh workflow run "Docker Publish" -f version=v0.1.0
 ```
 
-如果要发布到 Docker Hub、阿里云 ACR 或其他镜像仓库，需要在仓库 Secrets 中补充对应账号、密码或访问令牌，并调整 `.github/workflows/docker-publish.yml` 中的登录地址和镜像命名空间。
+如果要改发阿里云 ACR 或其他镜像仓库，需要在仓库 Secrets 中补充对应账号、密码或访问令牌，并调整 `.github/workflows/docker-publish.yml` 中的登录地址和镜像命名空间。
 
 ## 子模块使用
 
