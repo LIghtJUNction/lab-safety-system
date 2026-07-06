@@ -32,6 +32,47 @@
 - 后端职责：认证、授权、业务 API、数据持久化
 - 前端职责：通过 `frontend/` 子模块独立维护
 
+## Docker 部署
+
+当前后端运行时代码尚未实现，本仓库提供 Docker 基础配置，方便其他系统提前接入镜像构建、环境变量和 PostgreSQL 编排流程。后续接入真实后端框架时，只需要在 `Dockerfile` 中替换构建步骤和启动命令。
+
+准备环境变量：
+
+```bash
+cp .env.example .env
+```
+
+构建后端镜像：
+
+```bash
+docker build -t lab-safety-system-backend:latest .
+```
+
+使用 Docker Compose 启动后端容器和 PostgreSQL：
+
+```bash
+docker compose up -d --build
+```
+
+查看服务状态：
+
+```bash
+docker compose ps
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+默认数据库连接信息通过 `.env` 配置：
+
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `DATABASE_URL`
+
 ## 子模块使用
 
 首次克隆本仓库时，使用以下命令同时拉取前端子模块：

@@ -1,0 +1,15 @@
+.git
+.gitmodules
+frontend/.git
+frontend/node_modules
+frontend/dist
+frontend/build
+node_modules
+dist
+build
+target
+.env
+.env.*
+!.env.example
+Dockerfile
+docker-compose*.yml
