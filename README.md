@@ -48,7 +48,13 @@ cp .env.example .env
 docker build -t lab-safety-system-backend:latest .
 ```
 
-使用 Docker Compose 启动后端容器和 PostgreSQL：
+构建前端镜像：
+
+```bash
+docker build -t lab-safety-system-frontend:latest ./frontend
+```
+
+使用 Docker Compose 启动前端、后端容器和 PostgreSQL：
 
 ```bash
 docker compose up -d --build
@@ -72,6 +78,11 @@ docker compose down
 - `POSTGRES_USER`
 - `POSTGRES_PASSWORD`
 - `DATABASE_URL`
+
+默认端口：
+
+- 后端 API：`http://localhost:8080/api/v1`
+- 前端界面：`http://localhost:8081`
 
 ## 子模块使用
 
