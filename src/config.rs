@@ -12,6 +12,7 @@ pub struct Settings {
     pub oauth_enabled: bool,
     pub sso_login_url: Option<String>,
     pub oauth_login_url: Option<String>,
+    pub federated_login_secret: Option<String>,
 }
 
 impl Settings {
@@ -37,6 +38,7 @@ impl Settings {
             oauth_enabled: env::var("OAUTH_ENABLED").is_ok_and(|value| value == "true"),
             sso_login_url: env::var("SSO_LOGIN_URL").ok(),
             oauth_login_url: env::var("OAUTH_LOGIN_URL").ok(),
+            federated_login_secret: env::var("FEDERATED_LOGIN_SECRET").ok(),
         })
     }
 }

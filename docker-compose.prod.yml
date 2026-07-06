@@ -21,6 +21,7 @@ services:
       OAUTH_ENABLED: ${OAUTH_ENABLED:-false}
       SSO_LOGIN_URL: ${SSO_LOGIN_URL:-}
       OAUTH_LOGIN_URL: ${OAUTH_LOGIN_URL:-}
+      FEDERATED_LOGIN_SECRET: ${FEDERATED_LOGIN_SECRET:-}
     volumes:
       - backend-uploads:/app/uploads
     ports:

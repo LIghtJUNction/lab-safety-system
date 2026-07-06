@@ -84,6 +84,19 @@ pub fn verify_access_token(token: &str, secret: &str) -> anyhow::Result<String> 
     Ok(payload.sub)
 }
 
+pub fn sign_message(message: &str, secret: &str) -> anyhow::Result<String> {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
+    mac.update(message.as_bytes());
+    Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+pub fn verify_message_signature(message: &str, signature: &str, secret: &str) -> bool {
+    let Ok(expected) = sign_message(message, secret) else {
+        return false;
+    };
+    expected == signature
+}
+
 #[derive(Deserialize)]
 struct TokenPayload {
     sub: String,
@@ -101,8 +114,8 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_access_token, hash_password, validate_password_strength, verify_access_token,
-        verify_password,
+        create_access_token, hash_password, sign_message, validate_password_strength,
+        verify_access_token, verify_message_signature, verify_password,
     };
 
     #[test]
@@ -124,5 +137,20 @@ mod tests {
         let token = create_access_token("admin", "secret-a", 60).unwrap();
         assert_eq!(verify_access_token(&token, "secret-a").unwrap(), "admin");
         assert!(verify_access_token(&token, "secret-b").is_err());
+    }
+
+    #[test]
+    fn message_signature_round_trips() {
+        let signature = sign_message("provider|user@example.com", "secret").unwrap();
+        assert!(verify_message_signature(
+            "provider|user@example.com",
+            &signature,
+            "secret"
+        ));
+        assert!(!verify_message_signature(
+            "provider|other@example.com",
+            &signature,
+            "secret"
+        ));
     }
 }

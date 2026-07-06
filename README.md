@@ -13,9 +13,9 @@
 - 实验室安全隐患管理：问题照片上传、责任认领、整改照片上传、整改提交和闭环统计
 - 管理员和普通用户不同视图
 - 法规条例、事故案例、培训考核、设备预约、报修工单和统计分析
-- 账号密码登录扩展点
-- SSO 单点登录扩展点
-- OAuth 第三方授权登录扩展点
+- 账号密码登录
+- SSO 单点登录回调
+- OAuth 第三方授权登录回调
 - PostgreSQL 数据库存储
 
 ## 技术栈
@@ -148,6 +148,7 @@ SSO_ENABLED=false
 OAUTH_ENABLED=false
 SSO_LOGIN_URL=
 OAUTH_LOGIN_URL=
+FEDERATED_LOGIN_SECRET=
 ```
 
 部署时必须修改 `POSTGRES_PASSWORD` 和 `SECRET_KEY`。如果服务器上 `5432`、`8080` 或 `8081` 已被占用，可以在 `.env` 中修改：
@@ -167,7 +168,27 @@ SSO_ENABLED=true
 SSO_LOGIN_URL=https://idp.example.com/sso/login
 OAUTH_ENABLED=true
 OAUTH_LOGIN_URL=https://idp.example.com/oauth/authorize
+FEDERATED_LOGIN_SECRET=请改成随机长密钥
 ```
+
+SSO 和 OAuth 回调地址：
+
+- SSO：`https://你的域名/api/v1/auth/sso/callback`
+- OAuth：`https://你的域名/api/v1/auth/oauth/callback`
+
+企业 SSO 网关、OAuth2 Proxy 或 IdP 回调时需要传入 `username`、`email`、`display_name`、`role`、`department`、`exp`、`sig`。`role` 只能是 `admin` 或 `researcher`，不能通过联邦登录创建超级管理员。`sig` 使用 `FEDERATED_LOGIN_SECRET` 对下面的换行拼接内容做 HMAC-SHA256，并使用 base64url 无 padding 编码：
+
+```text
+provider
+username
+email
+display_name
+role
+department
+exp
+```
+
+其中 `provider` 是 `sso` 或 `oauth`，`exp` 是 Unix 秒级过期时间戳。首次成功回调会自动创建对应用户，后续回调会更新显示名、邮箱、角色和部门。
 
 ## 命令行用户管理
 

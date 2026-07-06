@@ -3,10 +3,11 @@ use std::{path::Path, sync::Arc};
 use axum::{
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use sqlx::{PgPool, Row};
 use tokio::fs;
@@ -17,7 +18,7 @@ use crate::{
     models::*,
     security::{
         create_access_token, hash_password, validate_password_strength, verify_access_token,
-        verify_password,
+        verify_message_signature, verify_password,
     },
 };
 
@@ -103,12 +104,26 @@ pub struct ListQuery {
     offset: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct FederatedLoginQuery {
+    username: String,
+    email: String,
+    display_name: Option<String>,
+    role: Option<String>,
+    department: Option<String>,
+    exp: i64,
+    sig: String,
+    redirect: Option<String>,
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/ready", get(ready))
         .route("/api/v1/auth/methods", get(auth_methods))
         .route("/api/v1/auth/password-login", post(password_login))
+        .route("/api/v1/auth/sso/callback", get(sso_callback))
+        .route("/api/v1/auth/oauth/callback", get(oauth_callback))
         .route("/api/v1/auth/me", get(auth_me))
         .route("/api/v1/users", get(list_users).post(create_user))
         .route(
@@ -229,6 +244,183 @@ async fn password_login(
             auth_provider: row.try_get("auth_provider")?,
         },
     }))
+}
+
+async fn sso_callback(
+    State(state): State<Arc<AppState>>,
+    Query(payload): Query<FederatedLoginQuery>,
+) -> Result<Html<String>, ApiError> {
+    federated_callback(&state, "sso", state.settings.sso_enabled, payload).await
+}
+
+async fn oauth_callback(
+    State(state): State<Arc<AppState>>,
+    Query(payload): Query<FederatedLoginQuery>,
+) -> Result<Html<String>, ApiError> {
+    federated_callback(&state, "oauth", state.settings.oauth_enabled, payload).await
+}
+
+async fn federated_callback(
+    state: &AppState,
+    provider: &'static str,
+    enabled: bool,
+    payload: FederatedLoginQuery,
+) -> Result<Html<String>, ApiError> {
+    if !enabled {
+        return Err(ApiError::forbidden(format!(
+            "{provider} login is not enabled"
+        )));
+    }
+    if payload.exp < chrono::Utc::now().timestamp() {
+        return Err(ApiError::unauthorized("Federated login payload expired"));
+    }
+    let Some(secret) = state.settings.federated_login_secret.as_deref() else {
+        return Err(ApiError::forbidden(
+            "FEDERATED_LOGIN_SECRET is required for SSO/OAuth callbacks",
+        ));
+    };
+    let display_name = payload
+        .display_name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| payload.username.clone());
+    let role = payload
+        .role
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "researcher".to_string());
+    validate_federated_role(&role)?;
+    let message = federated_signature_message(
+        provider,
+        &payload.username,
+        &payload.email,
+        &display_name,
+        &role,
+        payload.department.as_deref().unwrap_or(""),
+        payload.exp,
+    );
+    if !verify_message_signature(&message, &payload.sig, secret) {
+        return Err(ApiError::unauthorized("Invalid federated login signature"));
+    }
+    let user = upsert_federated_user(
+        state,
+        &payload.username,
+        &display_name,
+        &payload.email,
+        &role,
+        provider,
+        payload.department.as_deref(),
+    )
+    .await?;
+    if !user.is_active {
+        return Err(ApiError::unauthorized("User is disabled"));
+    }
+    let session = auth_token_for_user(state, user.into()).map_err(|error| ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: error.to_string(),
+    })?;
+    let session_json = serde_json::to_string(&session)?;
+    let session_payload = URL_SAFE_NO_PAD.encode(session_json.as_bytes());
+    let redirect = safe_local_redirect(payload.redirect.as_deref())?;
+    let redirect_with_session = format!("{redirect}#session={session_payload}");
+    Ok(Html(format!(
+        r#"<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>登录成功</title></head>
+<body>
+<script>
+window.location.replace({redirect});
+</script>
+</body>
+</html>"#,
+        redirect = serde_json::to_string(&redirect_with_session)?
+    )))
+}
+
+fn auth_token_for_user(state: &AppState, user: AuthUser) -> anyhow::Result<AuthToken> {
+    Ok(AuthToken {
+        access_token: create_access_token(
+            &user.username,
+            &state.settings.secret_key,
+            state.settings.token_ttl_seconds,
+        )?,
+        token_type: "bearer",
+        expires_in: state.settings.token_ttl_seconds,
+        user,
+    })
+}
+
+impl From<User> for AuthUser {
+    fn from(user: User) -> Self {
+        Self {
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            email: user.email,
+            role: user.role,
+            auth_provider: user.auth_provider,
+        }
+    }
+}
+
+async fn upsert_federated_user(
+    state: &AppState,
+    username: &str,
+    display_name: &str,
+    email: &str,
+    role: &str,
+    provider: &str,
+    department: Option<&str>,
+) -> Result<User, ApiError> {
+    Ok(sqlx::query_as::<_, User>(
+        r#"
+        insert into users (username, display_name, email, role, auth_provider, department)
+        values ($1, $2, $3, $4, $5, $6)
+        on conflict (username) do update set
+            display_name = excluded.display_name,
+            email = excluded.email,
+            role = case when users.role = 'super_admin' then users.role else excluded.role end,
+            auth_provider = excluded.auth_provider,
+            department = excluded.department,
+            updated_at = now()
+        returning id, username, display_name, email, role, auth_provider, department, is_active, created_at
+        "#,
+    )
+    .bind(username)
+    .bind(display_name)
+    .bind(email)
+    .bind(role)
+    .bind(provider)
+    .bind(department)
+    .fetch_one(&state.pool)
+    .await?)
+}
+
+fn validate_federated_role(role: &str) -> Result<(), ApiError> {
+    match role {
+        "admin" | "researcher" => Ok(()),
+        _ => Err(ApiError::bad_request(
+            "Federated login role must be admin or researcher",
+        )),
+    }
+}
+
+fn federated_signature_message(
+    provider: &str,
+    username: &str,
+    email: &str,
+    display_name: &str,
+    role: &str,
+    department: &str,
+    exp: i64,
+) -> String {
+    format!("{provider}\n{username}\n{email}\n{display_name}\n{role}\n{department}\n{exp}")
+}
+
+fn safe_local_redirect(value: Option<&str>) -> Result<String, ApiError> {
+    match value {
+        Some(value) if value.starts_with('/') && !value.starts_with("//") => Ok(value.to_string()),
+        Some(_) => Err(ApiError::bad_request("Redirect must be a local path")),
+        None => Ok("/".to_string()),
+    }
 }
 
 async fn auth_me(
