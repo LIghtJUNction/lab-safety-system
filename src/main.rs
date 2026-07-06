@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{Read, Write},
     net::TcpStream,
     sync::Arc,
@@ -6,6 +7,7 @@ use std::{
 };
 
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tower_http::{
     cors::CorsLayer,
     services::{ServeDir, ServeFile},
@@ -45,6 +47,8 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         pool,
         settings: settings.clone(),
+        passkey_registrations: Mutex::new(HashMap::new()),
+        passkey_authentications: Mutex::new(HashMap::new()),
     });
     let mut app = routes::router(state)
         .nest_service("/uploads", ServeDir::new(uploads))

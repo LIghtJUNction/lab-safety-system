@@ -19,8 +19,8 @@ services:
       APP_ENV: ${APP_ENV:-production}
       APP_HOST: ${APP_HOST:-0.0.0.0}
       APP_PORT: 8080
-      DATABASE_URL: postgresql://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-lab_safety}
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-lab_safety}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
       TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-3600}
       UPLOAD_DIR: /app/uploads
       SSO_ENABLED: ${SSO_ENABLED:-false}
@@ -28,6 +28,8 @@ services:
       SSO_LOGIN_URL: ${SSO_LOGIN_URL:-}
       OAUTH_LOGIN_URL: ${OAUTH_LOGIN_URL:-}
       FEDERATED_LOGIN_SECRET: ${FEDERATED_LOGIN_SECRET:-}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost:${FRONTEND_PORT:-8081}}
     volumes:
       - backend-uploads:/app/uploads
     ports:
@@ -48,7 +50,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-lab_safety}
       POSTGRES_USER: ${POSTGRES_USER:-lab_safety}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:

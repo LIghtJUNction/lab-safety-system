@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use axum::{
     extract::{Multipart, Path as AxumPath, Query, State},
@@ -8,10 +8,15 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
-use tokio::fs;
+use tokio::{fs, sync::Mutex};
 use uuid::Uuid;
+use webauthn_rs::prelude::{
+    CreationChallengeResponse, Passkey, PasskeyAuthentication, PasskeyRegistration,
+    PublicKeyCredential, RegisterPublicKeyCredential, RequestChallengeResponse, Url as WebauthnUrl,
+    Uuid as WebauthnUuid, Webauthn, WebauthnBuilder,
+};
 
 use crate::{
     config::Settings,
@@ -22,10 +27,12 @@ use crate::{
     },
 };
 
-#[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
     pub settings: Settings,
+    pub passkey_registrations: Mutex<HashMap<String, (i64, PasskeyRegistration)>>,
+    pub passkey_authentications:
+        Mutex<HashMap<String, (String, PasskeyAuthentication, Vec<StoredPasskey>)>>,
 }
 
 #[derive(Debug)]
@@ -106,14 +113,52 @@ pub struct ListQuery {
 
 #[derive(Deserialize)]
 pub struct FederatedLoginQuery {
-    username: String,
-    email: String,
+    username: Option<String>,
+    email: Option<String>,
     display_name: Option<String>,
     role: Option<String>,
     department: Option<String>,
-    exp: i64,
-    sig: String,
+    exp: Option<i64>,
+    sig: Option<String>,
     redirect: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct StoredPasskey {
+    id: i64,
+    credential: Passkey,
+}
+
+#[derive(Deserialize)]
+pub struct PasskeyStartRequest {
+    username: String,
+}
+
+#[derive(Deserialize)]
+pub struct PasskeyRegisterFinish {
+    challenge_id: String,
+    name: Option<String>,
+    credential: RegisterPublicKeyCredential,
+}
+
+#[derive(Deserialize)]
+pub struct PasskeyLoginFinish {
+    challenge_id: String,
+    credential: PublicKeyCredential,
+}
+
+#[derive(Serialize)]
+pub struct PasskeyChallenge<T> {
+    challenge_id: String,
+    options: T,
+}
+
+#[derive(Serialize)]
+pub struct PasskeySummary {
+    id: i64,
+    name: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -122,6 +167,23 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/ready", get(ready))
         .route("/api/v1/auth/methods", get(auth_methods))
         .route("/api/v1/auth/password-login", post(password_login))
+        .route(
+            "/api/v1/auth/passkey/login/start",
+            post(passkey_login_start),
+        )
+        .route(
+            "/api/v1/auth/passkey/login/finish",
+            post(passkey_login_finish),
+        )
+        .route(
+            "/api/v1/auth/passkey/register/start",
+            post(passkey_register_start),
+        )
+        .route(
+            "/api/v1/auth/passkey/register/finish",
+            post(passkey_register_finish),
+        )
+        .route("/api/v1/auth/passkeys", get(list_passkeys))
         .route("/api/v1/auth/sso/callback", get(sso_callback))
         .route("/api/v1/auth/oauth/callback", get(oauth_callback))
         .route("/api/v1/auth/me", get(auth_me))
@@ -185,13 +247,38 @@ async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Va
 }
 
 async fn auth_methods(State(state): State<Arc<AppState>>) -> Json<AuthMethods> {
+    let sso_login_url = federated_login_url(
+        state.settings.sso_enabled,
+        state.settings.sso_login_url.as_deref(),
+        "/api/v1/auth/sso/callback",
+    );
+    let oauth_login_url = federated_login_url(
+        state.settings.oauth_enabled,
+        state.settings.oauth_login_url.as_deref(),
+        "/api/v1/auth/oauth/callback",
+    );
     Json(AuthMethods {
         password: true,
-        sso: state.settings.sso_enabled,
-        oauth: state.settings.oauth_enabled,
-        sso_login_url: state.settings.sso_login_url.clone(),
-        oauth_login_url: state.settings.oauth_login_url.clone(),
+        sso: sso_login_url.is_some(),
+        oauth: oauth_login_url.is_some(),
+        sso_login_url,
+        oauth_login_url,
     })
+}
+
+fn federated_login_url(
+    enabled: bool,
+    login_url: Option<&str>,
+    callback_path: &str,
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    let login_url = login_url?.trim();
+    if login_url.is_empty() || login_url == callback_path {
+        return None;
+    }
+    Some(login_url.to_string())
 }
 
 async fn password_login(
@@ -246,6 +333,189 @@ async fn password_login(
     }))
 }
 
+async fn passkey_login_start(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PasskeyStartRequest>,
+) -> Result<Json<PasskeyChallenge<RequestChallengeResponse>>, ApiError> {
+    let username = payload.username.trim();
+    if username.is_empty() {
+        return Err(ApiError::bad_request("username is required"));
+    }
+    let passkeys = load_passkeys_for_username(&state, username).await?;
+    if passkeys.is_empty() {
+        return Err(ApiError::not_found("No passkey is bound to this user"));
+    }
+    let credentials: Vec<Passkey> = passkeys
+        .iter()
+        .map(|stored| stored.credential.clone())
+        .collect();
+    let webauthn = webauthn(&state.settings)?;
+    let (options, auth_state) = webauthn
+        .start_passkey_authentication(&credentials)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let challenge_id = Uuid::new_v4().to_string();
+    state.passkey_authentications.lock().await.insert(
+        challenge_id.clone(),
+        (username.to_string(), auth_state, passkeys),
+    );
+    Ok(Json(PasskeyChallenge {
+        challenge_id,
+        options,
+    }))
+}
+
+async fn passkey_login_finish(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PasskeyLoginFinish>,
+) -> Result<Json<AuthToken>, ApiError> {
+    let Some((username, auth_state, stored_passkeys)) = state
+        .passkey_authentications
+        .lock()
+        .await
+        .remove(&payload.challenge_id)
+    else {
+        return Err(ApiError::bad_request("Passkey challenge expired"));
+    };
+    let webauthn = webauthn(&state.settings)?;
+    let auth_result = webauthn
+        .finish_passkey_authentication(&payload.credential, &auth_state)
+        .map_err(|error| ApiError::unauthorized(error.to_string()))?;
+    let mut matched: Option<StoredPasskey> = None;
+    for mut stored in stored_passkeys {
+        if stored.credential.update_credential(&auth_result).is_some() {
+            matched = Some(stored);
+            break;
+        }
+    }
+    let Some(stored) = matched else {
+        return Err(ApiError::unauthorized(
+            "Passkey credential is not registered",
+        ));
+    };
+    sqlx::query("update passkeys set credential_json = $1, last_used_at = now() where id = $2")
+        .bind(serde_json::to_string(&stored.credential)?)
+        .bind(stored.id)
+        .execute(&state.pool)
+        .await?;
+    let user = load_auth_user_by_username(&state, &username).await?;
+    auth_token_for_user(&state, user)
+        .map(Json)
+        .map_err(|error| ApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: error.to_string(),
+        })
+}
+
+async fn passkey_register_start(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<PasskeyChallenge<CreationChallengeResponse>>, ApiError> {
+    let user = require_user(&state, &headers).await?;
+    let exclude_credentials = load_passkeys_for_user(&state, user.id)
+        .await?
+        .into_iter()
+        .map(|stored| stored.credential.cred_id().clone())
+        .collect();
+    let webauthn = webauthn(&state.settings)?;
+    let (options, reg_state) = webauthn
+        .start_passkey_registration(
+            WebauthnUuid::from_u128(user.id as u128),
+            &user.username,
+            &user.display_name,
+            Some(exclude_credentials),
+        )
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let challenge_id = Uuid::new_v4().to_string();
+    state
+        .passkey_registrations
+        .lock()
+        .await
+        .insert(challenge_id.clone(), (user.id, reg_state));
+    Ok(Json(PasskeyChallenge {
+        challenge_id,
+        options,
+    }))
+}
+
+async fn passkey_register_finish(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<PasskeyRegisterFinish>,
+) -> Result<Json<PasskeySummary>, ApiError> {
+    let user = require_user(&state, &headers).await?;
+    let Some((user_id, reg_state)) = state
+        .passkey_registrations
+        .lock()
+        .await
+        .remove(&payload.challenge_id)
+    else {
+        return Err(ApiError::bad_request("Passkey challenge expired"));
+    };
+    if user_id != user.id {
+        return Err(ApiError::forbidden(
+            "Passkey challenge belongs to another user",
+        ));
+    }
+    let webauthn = webauthn(&state.settings)?;
+    let passkey = webauthn
+        .finish_passkey_registration(&payload.credential, &reg_state)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let credential_id = serde_json::to_string(passkey.cred_id())?;
+    let name = payload
+        .name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Passkey".to_string());
+    let row = sqlx::query(
+        r#"
+        insert into passkeys (user_id, credential_id, name, credential_json)
+        values ($1, $2, $3, $4)
+        returning id, name, created_at, last_used_at
+        "#,
+    )
+    .bind(user.id)
+    .bind(credential_id)
+    .bind(name)
+    .bind(serde_json::to_string(&passkey)?)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(PasskeySummary {
+        id: row.try_get("id")?,
+        name: row.try_get("name")?,
+        created_at: row.try_get("created_at")?,
+        last_used_at: row.try_get("last_used_at")?,
+    }))
+}
+
+async fn list_passkeys(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<PasskeySummary>>, ApiError> {
+    let user = require_user(&state, &headers).await?;
+    let rows = sqlx::query(
+        r#"
+        select id, name, created_at, last_used_at
+        from passkeys
+        where user_id = $1
+        order by created_at desc
+        "#,
+    )
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+    let passkeys = rows
+        .into_iter()
+        .map(|row| {
+            Ok(PasskeySummary {
+                id: row.try_get("id")?,
+                name: row.try_get("name")?,
+                created_at: row.try_get("created_at")?,
+                last_used_at: row.try_get("last_used_at")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    Ok(Json(passkeys))
+}
+
 async fn sso_callback(
     State(state): State<Arc<AppState>>,
     Query(payload): Query<FederatedLoginQuery>,
@@ -271,7 +541,14 @@ async fn federated_callback(
             "{provider} login is not enabled"
         )));
     }
-    if payload.exp < chrono::Utc::now().timestamp() {
+    let username = required_federated_param(payload.username, "username")?;
+    let email = required_federated_param(payload.email, "email")?;
+    let exp = payload
+        .exp
+        .ok_or_else(|| ApiError::bad_request("Missing federated login field: exp"))?;
+    let sig = required_federated_param(payload.sig, "sig")?;
+
+    if exp < chrono::Utc::now().timestamp() {
         return Err(ApiError::unauthorized("Federated login payload expired"));
     }
     let Some(secret) = state.settings.federated_login_secret.as_deref() else {
@@ -282,7 +559,7 @@ async fn federated_callback(
     let display_name = payload
         .display_name
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| payload.username.clone());
+        .unwrap_or_else(|| username.clone());
     let role = payload
         .role
         .filter(|value| !value.trim().is_empty())
@@ -290,21 +567,21 @@ async fn federated_callback(
     validate_federated_role(&role)?;
     let message = federated_signature_message(
         provider,
-        &payload.username,
-        &payload.email,
+        &username,
+        &email,
         &display_name,
         &role,
         payload.department.as_deref().unwrap_or(""),
-        payload.exp,
+        exp,
     );
-    if !verify_message_signature(&message, &payload.sig, secret) {
+    if !verify_message_signature(&message, &sig, secret) {
         return Err(ApiError::unauthorized("Invalid federated login signature"));
     }
     let user = upsert_federated_user(
         state,
-        &payload.username,
+        &username,
         &display_name,
-        &payload.email,
+        &email,
         &role,
         provider,
         payload.department.as_deref(),
@@ -333,6 +610,97 @@ window.location.replace({redirect});
 </html>"#,
         redirect = serde_json::to_string(&redirect_with_session)?
     )))
+}
+
+fn webauthn(settings: &Settings) -> Result<Webauthn, ApiError> {
+    let origin = WebauthnUrl::parse(&settings.webauthn_origin)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    WebauthnBuilder::new(&settings.webauthn_rp_id, &origin)
+        .map_err(|error| ApiError::bad_request(error.to_string()))?
+        .build()
+        .map_err(|error| ApiError::bad_request(error.to_string()))
+}
+
+async fn load_passkeys_for_username(
+    state: &AppState,
+    username: &str,
+) -> Result<Vec<StoredPasskey>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        select passkeys.id, passkeys.credential_json
+        from passkeys
+        join users on users.id = passkeys.user_id
+        where users.username = $1 and users.is_active = true
+        order by passkeys.created_at desc
+        "#,
+    )
+    .bind(username)
+    .fetch_all(&state.pool)
+    .await?;
+    stored_passkeys_from_rows(rows)
+}
+
+async fn load_passkeys_for_user(
+    state: &AppState,
+    user_id: i64,
+) -> Result<Vec<StoredPasskey>, ApiError> {
+    let rows = sqlx::query(
+        r#"
+        select id, credential_json
+        from passkeys
+        where user_id = $1
+        order by created_at desc
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(&state.pool)
+    .await?;
+    stored_passkeys_from_rows(rows)
+}
+
+fn stored_passkeys_from_rows(
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Result<Vec<StoredPasskey>, ApiError> {
+    rows.into_iter()
+        .map(|row| {
+            let credential_json: String = row.try_get("credential_json")?;
+            let credential = serde_json::from_str(&credential_json)?;
+            Ok(StoredPasskey {
+                id: row.try_get("id")?,
+                credential,
+            })
+        })
+        .collect()
+}
+
+async fn load_auth_user_by_username(
+    state: &AppState,
+    username: &str,
+) -> Result<AuthUser, ApiError> {
+    let row = sqlx::query(
+        r#"
+        select id, username, display_name, email, role, auth_provider, is_active
+        from users
+        where username = $1
+        "#,
+    )
+    .bind(username)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(row) = row else {
+        return Err(ApiError::unauthorized("User no longer exists"));
+    };
+    if !row.try_get::<bool, _>("is_active")? {
+        return Err(ApiError::unauthorized("User is disabled"));
+    }
+    Ok(AuthUser {
+        id: row.try_get("id")?,
+        username: row.try_get("username")?,
+        display_name: row.try_get("display_name")?,
+        email: row.try_get("email")?,
+        role: row.try_get("role")?,
+        auth_provider: row.try_get("auth_provider")?,
+    })
 }
 
 fn auth_token_for_user(state: &AppState, user: AuthUser) -> anyhow::Result<AuthToken> {
@@ -415,6 +783,12 @@ fn federated_signature_message(
     format!("{provider}\n{username}\n{email}\n{display_name}\n{role}\n{department}\n{exp}")
 }
 
+fn required_federated_param(value: Option<String>, field: &str) -> Result<String, ApiError> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::bad_request(format!("Missing federated login field: {field}")))
+}
+
 fn safe_local_redirect(value: Option<&str>) -> Result<String, ApiError> {
     match value {
         Some(value) if value.starts_with('/') && !value.starts_with("//") => Ok(value.to_string()),
@@ -495,8 +869,19 @@ async fn create_user(
         validate_password_strength(password).map_err(ApiError::bad_request)?;
     }
     let auth_provider = payload.auth_provider.unwrap_or_else(|| "password".into());
+    if !matches!(auth_provider.as_str(), "password" | "sso" | "oauth") {
+        return Err(ApiError::bad_request(
+            "auth_provider must be password, sso, or oauth",
+        ));
+    }
     if auth_provider == "password" && payload.password.is_none() {
         return Err(ApiError::bad_request("Password users require a password"));
+    }
+    let role = payload.role.unwrap_or_else(|| "researcher".into());
+    if !matches!(role.as_str(), "admin" | "researcher") {
+        return Err(ApiError::bad_request(
+            "API user creation only supports admin or researcher",
+        ));
     }
     let password_hash = payload.password.as_deref().map(hash_password);
     let user = sqlx::query_as::<_, User>(
@@ -509,7 +894,7 @@ async fn create_user(
     .bind(payload.username)
     .bind(payload.display_name)
     .bind(payload.email)
-    .bind(payload.role.unwrap_or_else(|| "researcher".into()))
+    .bind(role)
     .bind(auth_provider)
     .bind(payload.department)
     .bind(password_hash)

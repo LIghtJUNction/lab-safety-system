@@ -13,6 +13,8 @@ pub struct Settings {
     pub sso_login_url: Option<String>,
     pub oauth_login_url: Option<String>,
     pub federated_login_secret: Option<String>,
+    pub webauthn_rp_id: String,
+    pub webauthn_origin: String,
 }
 
 impl Settings {
@@ -39,6 +41,9 @@ impl Settings {
             sso_login_url: env::var("SSO_LOGIN_URL").ok(),
             oauth_login_url: env::var("OAUTH_LOGIN_URL").ok(),
             federated_login_secret: env::var("FEDERATED_LOGIN_SECRET").ok(),
+            webauthn_rp_id: env::var("WEBAUTHN_RP_ID").unwrap_or_else(|_| "localhost".to_string()),
+            webauthn_origin: env::var("WEBAUTHN_ORIGIN")
+                .unwrap_or_else(|_| "http://localhost:5174".to_string()),
         })
     }
 }

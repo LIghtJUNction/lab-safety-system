@@ -132,4 +132,15 @@ const MIGRATIONS: &[&str] = &[
         updated_at timestamptz not null default now()
     )
     "#,
+    r#"
+    create table if not exists passkeys (
+        id bigserial primary key,
+        user_id bigint not null references users(id) on delete cascade,
+        credential_id text not null unique,
+        name text not null,
+        credential_json text not null,
+        created_at timestamptz not null default now(),
+        last_used_at timestamptz
+    )
+    "#,
 ];

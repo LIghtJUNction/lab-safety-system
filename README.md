@@ -1,78 +1,68 @@
 # Lab Safety System
 
-实验室信息管理系统。主仓库是 Rust 后端，前端项目以 Git 子模块形式维护在 [`frontend/`](./frontend)。
+实验室信息管理系统，当前重点是实验室安全管理。主仓库是 Rust 后端项目，前端项目以 Git 子模块维护在 [`frontend/`](./frontend)。
 
-- 后端仓库：`lab-safety-system`，负责认证授权、业务 API、文件上传和 PostgreSQL 数据访问。
-- 前端子模块：`frontend/`，负责实验室安全管理界面和用户交互。
+- 后端仓库：`lab-safety-system`，提供认证授权、业务 API、文件上传、命令行用户管理和 PostgreSQL 数据访问。
+- 前端子模块：`frontend/`，提供实验室安全管理界面。
 - 前端仓库：<https://github.com/LIghtJUNction/lab-safety-system-frontend>
 
 ## 功能范围
 
-系统面向实验室安全管理场景，当前覆盖：
-
 - 实验室安全隐患管理：问题照片上传、责任认领、整改照片上传、整改提交和闭环统计
-- 管理员和普通用户不同视图
-- 法规条例、事故案例、培训考核、设备预约、报修工单和统计分析
-- 账号密码登录
-- SSO 单点登录回调
-- OAuth 第三方授权登录回调
-- PostgreSQL 数据库存储
+- 管理员和普通用户登录后看到不同界面
+- 法规条例、事故案例、培训考核、设备预约、报修工单、用户管理和统计分析
+- 账号密码登录、Passkey、SSO 单点登录回调、OAuth 授权登录回调
+- PostgreSQL 持久化存储
+- 命令行用户管理：仅超级管理员可用
 
 ## 技术栈
 
-- 后端：Rust
-- Web 框架：Axum
+- 后端：Rust + Axum
 - 数据库：PostgreSQL
-- 前端：React + Vite，通过子模块维护
+- 前端：React + Vite
 - 部署：Docker / Docker Compose
 - 镜像仓库：Docker Hub + GHCR
 
-## 推荐部署：整合镜像
+## 快速部署
 
-推荐普通部署者使用整合镜像。这个镜像把前端静态页面和 Rust 后端 API 放在同一个容器里，只需要再启动一个 PostgreSQL 容器。
-
-准备一台已安装 Docker 和 Docker Compose 的服务器，然后创建部署目录：
+推荐普通部署者使用整合镜像。这个镜像把前端静态页面和 Rust API 打包到同一个容器，另起一个 PostgreSQL 容器。
 
 ```bash
 mkdir -p lab-safety-system
 cd lab-safety-system
-```
-
-下载整合版 compose 文件和环境变量模板：
-
-```bash
 curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.integrated.yml
 curl -fsSLo .env https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/.env.example
 ```
 
-编辑 `.env`，至少修改这些值：
+生成强密码和强密钥，并写入 `.env`。不要使用示例占位值作为生产密码。
 
-```env
-POSTGRES_PASSWORD=请改成强密码
-SECRET_KEY=请改成随机长密钥
+```bash
+openssl rand -base64 32
+openssl rand -hex 32
 ```
 
-启动服务：
+至少修改：
+
+```env
+POSTGRES_PASSWORD=上面生成的数据库强密码
+SECRET_KEY=上面生成的随机长密钥
+```
+
+启动：
 
 ```bash
 docker compose -f docker-compose.integrated.yml up -d
 ```
 
-首次部署后创建超级管理员。密码必须是强密码，至少 12 位并包含大小写字母、数字和符号：
+首次部署后创建超级管理员。超级管理员密码必须至少 12 位，并包含小写字母、大写字母、数字和符号。
 
 ```bash
 docker compose -f docker-compose.integrated.yml exec app \
   lab-safety-system users bootstrap-super-admin \
   --username admin \
-  --password '请替换为强密码' \
+  --password '请替换为强密码，例如 StrongAdminPass2026!' \
   --email admin@example.com \
   --display-name 超级管理员
-```
-
-查看状态：
-
-```bash
-docker compose -f docker-compose.integrated.yml ps
 ```
 
 访问地址：
@@ -81,26 +71,27 @@ docker compose -f docker-compose.integrated.yml ps
 - 后端 API：`http://服务器IP:8080/api/v1`
 - 健康检查：`http://服务器IP:8080/api/v1/ready`
 
-停止服务：
+常用运维命令：
 
 ```bash
-docker compose -f docker-compose.integrated.yml down
-```
-
-升级到最新镜像：
-
-```bash
+docker compose -f docker-compose.integrated.yml ps
 docker compose -f docker-compose.integrated.yml pull
 docker compose -f docker-compose.integrated.yml up -d
+docker compose -f docker-compose.integrated.yml down
 ```
 
 ## 分离部署
 
-如果需要前端和后端分开运行，可以使用分离版 compose 文件：
+如果需要前端和后端分开运行：
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.prod.yml
 curl -fsSLo .env https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/.env.example
+```
+
+修改 `.env` 中的 `POSTGRES_PASSWORD` 和 `SECRET_KEY` 后启动：
+
+```bash
 docker compose -f docker-compose.prod.yml up -d
 ```
 
@@ -135,23 +126,26 @@ APP_ENV=production
 APP_HOST=0.0.0.0
 APP_PORT=8080
 FRONTEND_PORT=8081
-
+APP_IMAGE=docker.io/lightjunction/lab-safety-system:latest
+BACKEND_IMAGE=docker.io/lightjunction/lab-safety-system-backend:latest
+FRONTEND_IMAGE=docker.io/lightjunction/lab-safety-system-frontend:latest
 POSTGRES_DB=lab_safety
 POSTGRES_USER=lab_safety
-POSTGRES_PASSWORD=change-me
+POSTGRES_PASSWORD=必须替换为强密码
 POSTGRES_PORT=5432
-
-SECRET_KEY=change-me-in-production
+SECRET_KEY=必须替换为随机长密钥
 TOKEN_TTL_SECONDS=3600
-
+UPLOAD_DIR=/app/uploads
 SSO_ENABLED=false
 OAUTH_ENABLED=false
 SSO_LOGIN_URL=
 OAUTH_LOGIN_URL=
 FEDERATED_LOGIN_SECRET=
+WEBAUTHN_RP_ID=你的域名
+WEBAUTHN_ORIGIN=https://你的域名
 ```
 
-部署时必须修改 `POSTGRES_PASSWORD` 和 `SECRET_KEY`。如果服务器上 `5432`、`8080` 或 `8081` 已被占用，可以在 `.env` 中修改：
+整合版只使用 `APP_PORT` 作为访问端口；分离版同时使用 `APP_PORT` 和 `FRONTEND_PORT`。如果服务器上 `5432`、`8080` 或 `8081` 已被占用，可以在 `.env` 中修改：
 
 ```env
 POSTGRES_PORT=15432
@@ -159,7 +153,7 @@ APP_PORT=18080
 FRONTEND_PORT=18081
 ```
 
-整合版部署只使用 `APP_PORT` 作为访问端口；分离版部署会同时使用 `APP_PORT` 和 `FRONTEND_PORT`。
+## SSO / OAuth
 
 如果要接入 SSO 或 OAuth，把对应开关和跳转地址打开：
 
@@ -168,15 +162,17 @@ SSO_ENABLED=true
 SSO_LOGIN_URL=https://idp.example.com/sso/login
 OAUTH_ENABLED=true
 OAUTH_LOGIN_URL=https://idp.example.com/oauth/authorize
-FEDERATED_LOGIN_SECRET=请改成随机长密钥
+FEDERATED_LOGIN_SECRET=必须替换为随机长密钥
 ```
 
-SSO 和 OAuth 回调地址：
+回调地址：
 
 - SSO：`https://你的域名/api/v1/auth/sso/callback`
 - OAuth：`https://你的域名/api/v1/auth/oauth/callback`
 
-企业 SSO 网关、OAuth2 Proxy 或 IdP 回调时需要传入 `username`、`email`、`display_name`、`role`、`department`、`exp`、`sig`。`role` 只能是 `admin` 或 `researcher`，不能通过联邦登录创建超级管理员。`sig` 使用 `FEDERATED_LOGIN_SECRET` 对下面的换行拼接内容做 HMAC-SHA256，并使用 base64url 无 padding 编码：
+企业 SSO 网关、OAuth2 Proxy 或 IdP 回调时需要传入 `username`、`email`、`display_name`、`role`、`department`、`exp`、`sig`。`role` 只能是 `admin` 或 `researcher`，不能通过联邦登录创建超级管理员。
+
+`sig` 使用 `FEDERATED_LOGIN_SECRET` 对下面的换行拼接内容做 HMAC-SHA256，并使用 base64url 无 padding 编码：
 
 ```text
 provider
@@ -190,6 +186,26 @@ exp
 
 其中 `provider` 是 `sso` 或 `oauth`，`exp` 是 Unix 秒级过期时间戳。首次成功回调会自动创建对应用户，后续回调会更新显示名、邮箱、角色和部门。
 
+## Passkey
+
+Passkey 使用浏览器 WebAuthn API。用户必须先用账号密码、SSO 或 OAuth 登录，再在右上角用户区域点击 `Passkey` 绑定；之后登录页密码框右侧可以使用 `Passkey` 登录。
+
+生产部署必须把 WebAuthn 的 RP ID 和 Origin 配成真实访问域名，否则浏览器会拒绝凭据：
+
+```env
+WEBAUTHN_RP_ID=lab.example.com
+WEBAUTHN_ORIGIN=https://lab.example.com
+```
+
+本地开发默认是：
+
+```env
+WEBAUTHN_RP_ID=localhost
+WEBAUTHN_ORIGIN=http://localhost:5174
+```
+
+本地测试 Passkey 请使用 `http://localhost:5174` 访问前端。WebAuthn 不接受裸 IP 作为 RP ID；如果使用整合镜像或生产部署，建议配置 HTTPS 域名，例如 `lab.example.com`。
+
 ## 命令行用户管理
 
 命令行用户管理仅允许超级管理员执行。首次部署只能在系统中不存在超级管理员时执行 bootstrap：
@@ -197,7 +213,7 @@ exp
 ```bash
 lab-safety-system users bootstrap-super-admin \
   --username admin \
-  --password '请替换为强密码' \
+  --password '请替换为强密码，例如 StrongAdminPass2026!' \
   --email admin@example.com
 ```
 
@@ -208,7 +224,7 @@ lab-safety-system users create \
   --actor admin \
   --actor-password '超级管理员强密码' \
   --username researcher01 \
-  --password '普通用户强密码' \
+  --password '请替换为强密码，例如 ResearcherPass2026!' \
   --email researcher01@example.com \
   --role researcher \
   --display-name 研究员01
@@ -221,8 +237,10 @@ lab-safety-system users set-password \
   --actor admin \
   --actor-password '超级管理员强密码' \
   --username researcher01 \
-  --password '新的普通用户强密码'
+  --password '请替换为新的强密码，例如 ResearcherPass2027!'
 ```
+
+密码策略：至少 12 位，并包含小写字母、大写字母、数字和符号。弱密码会被后端和命令行工具拒绝。
 
 支持角色：
 
@@ -245,7 +263,7 @@ cd lab-safety-system
 git submodule update --init --recursive
 ```
 
-复制环境变量：
+复制环境变量并替换强密码/强密钥：
 
 ```bash
 cp .env.example .env
@@ -290,8 +308,6 @@ Docker Hub 发布依赖仓库 Secrets：
 - `DOCKERHUB_USERNAME`
 - `DOCKERHUB_TOKEN`
 
-当前仓库已经配置好这两个 Secrets。
-
 ## 数据和上传文件
 
 Compose 会创建两个持久化卷：
@@ -300,3 +316,9 @@ Compose 会创建两个持久化卷：
 - `backend-uploads`：隐患照片、整改照片等上传文件
 
 执行 `docker compose down` 不会删除数据卷。只有执行 `docker compose down -v` 才会删除数据库和上传文件。
+
+## 开源许可和声明
+
+本项目使用 GPL-3.0-only 许可证，详见 [`LICENSE`](./LICENSE)。软件按现状提供，不附带任何明示或默示担保。部署者需要自行负责生产环境的数据安全、账号策略、备份、审计和合规要求。
+
+源码仓库：<https://github.com/LIghtJUNction/lab-safety-system>
