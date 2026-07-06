@@ -1,14 +1,6 @@
 services:
-  frontend:
-    image: ${FRONTEND_IMAGE:-docker.io/lightjunction/lab-safety-system-frontend:latest}
-    ports:
-      - "${FRONTEND_PORT:-8081}:80"
-    depends_on:
-      - backend
-    restart: unless-stopped
-
-  backend:
-    image: ${BACKEND_IMAGE:-docker.io/lightjunction/lab-safety-system-backend:latest}
+  app:
+    image: ${APP_IMAGE:-docker.io/lightjunction/lab-safety-system:latest}
     environment:
       APP_ENV: ${APP_ENV:-production}
       APP_HOST: ${APP_HOST:-0.0.0.0}
@@ -16,6 +8,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-lab_safety}
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
       TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-3600}
+      STATIC_DIR: /app/public
       UPLOAD_DIR: /app/uploads
       SSO_ENABLED: ${SSO_ENABLED:-false}
       OAUTH_ENABLED: ${OAUTH_ENABLED:-false}

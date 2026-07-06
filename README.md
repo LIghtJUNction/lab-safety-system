@@ -1,6 +1,6 @@
 # Lab Safety System
 
-实验室信息管理系统后端项目。主仓库是 Rust 后端，前端项目以 Git 子模块形式维护在 [`frontend/`](./frontend)。
+实验室信息管理系统。主仓库是 Rust 后端，前端项目以 Git 子模块形式维护在 [`frontend/`](./frontend)。
 
 - 后端仓库：`lab-safety-system`，负责认证授权、业务 API、文件上传和 PostgreSQL 数据访问。
 - 前端子模块：`frontend/`，负责实验室安全管理界面和用户交互。
@@ -27,9 +27,9 @@
 - 部署：Docker / Docker Compose
 - 镜像仓库：Docker Hub + GHCR
 
-## 快速部署
+## 推荐部署：整合镜像
 
-推荐普通部署者使用 Docker Hub 镜像，不需要安装 Rust、Node.js，也不需要拉取前端子模块。
+推荐普通部署者使用整合镜像。这个镜像把前端静态页面和 Rust 后端 API 放在同一个容器里，只需要再启动一个 PostgreSQL 容器。
 
 准备一台已安装 Docker 和 Docker Compose 的服务器，然后创建部署目录：
 
@@ -38,10 +38,10 @@ mkdir -p lab-safety-system
 cd lab-safety-system
 ```
 
-下载生产 compose 文件和环境变量模板：
+下载整合版 compose 文件和环境变量模板：
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.prod.yml
+curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.integrated.yml
 curl -fsSLo .env https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/.env.example
 ```
 
@@ -55,45 +55,63 @@ SECRET_KEY=请改成随机长密钥
 启动服务：
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.integrated.yml up -d
 ```
 
 查看状态：
 
 ```bash
-docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.integrated.yml ps
 ```
 
 访问地址：
 
-- 前端界面：`http://服务器IP:8081`
+- 系统界面：`http://服务器IP:8080`
 - 后端 API：`http://服务器IP:8080/api/v1`
 - 健康检查：`http://服务器IP:8080/api/v1/ready`
 
 停止服务：
 
 ```bash
-docker compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.integrated.yml down
 ```
 
 升级到最新镜像：
 
 ```bash
-docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.integrated.yml pull
+docker compose -f docker-compose.integrated.yml up -d
+```
+
+## 分离部署
+
+如果需要前端和后端分开运行，可以使用分离版 compose 文件：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.prod.yml
+curl -fsSLo .env https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/.env.example
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+分离版默认端口：
+
+- 前端界面：`http://服务器IP:8081`
+- 后端 API：`http://服务器IP:8080/api/v1`
+- 健康检查：`http://服务器IP:8080/api/v1/ready`
 
 ## 镜像地址
 
 Docker Hub：
 
-- `docker.io/lightjunction/lab-safety-system-backend:latest`
-- `docker.io/lightjunction/lab-safety-system-frontend:latest`
+- 整合镜像：`docker.io/lightjunction/lab-safety-system:latest`
+- 后端镜像：`docker.io/lightjunction/lab-safety-system-backend:latest`
+- 前端镜像：`docker.io/lightjunction/lab-safety-system-frontend:latest`
 
 GHCR：
 
-- `ghcr.io/lightjunction/lab-safety-system-backend:latest`
-- `ghcr.io/lightjunction/lab-safety-system-frontend:latest`
+- 整合镜像：`ghcr.io/lightjunction/lab-safety-system:latest`
+- 后端镜像：`ghcr.io/lightjunction/lab-safety-system-backend:latest`
+- 前端镜像：`ghcr.io/lightjunction/lab-safety-system-frontend:latest`
 
 如果需要固定版本，可以使用 GitHub Actions 手动发布时填写的版本标签，例如 `v0.1.0`。
 
@@ -110,6 +128,8 @@ FRONTEND_PORT=8081
 POSTGRES_DB=lab_safety
 POSTGRES_USER=lab_safety
 POSTGRES_PASSWORD=change-me
+POSTGRES_PORT=5432
+
 SECRET_KEY=change-me-in-production
 TOKEN_TTL_SECONDS=3600
 
@@ -124,6 +144,8 @@ POSTGRES_PORT=15432
 APP_PORT=18080
 FRONTEND_PORT=18081
 ```
+
+整合版部署只使用 `APP_PORT` 作为访问端口；分离版部署会同时使用 `APP_PORT` 和 `FRONTEND_PORT`。
 
 ## 本地源码运行
 
@@ -152,10 +174,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-查看服务：
+从源码构建整合镜像：
 
 ```bash
-docker compose ps
+docker build -f Dockerfile.integrated -t lab-safety-system:latest .
 ```
 
 停止服务：

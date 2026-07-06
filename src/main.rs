@@ -6,7 +6,11 @@ use std::{
 };
 
 use tokio::net::TcpListener;
-use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
+use tower_http::{
+    cors::CorsLayer,
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
 
 mod config;
 mod db;
@@ -37,10 +41,17 @@ async fn main() -> anyhow::Result<()> {
         pool,
         settings: settings.clone(),
     });
-    let app = routes::router(state)
+    let mut app = routes::router(state)
         .nest_service("/uploads", ServeDir::new(uploads))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
+
+    if let Some(static_dir) = settings.static_dir.clone() {
+        app = app.fallback_service(
+            ServeDir::new(&static_dir)
+                .not_found_service(ServeFile::new(static_dir.join("index.html"))),
+        );
+    }
 
     let listener = TcpListener::bind(settings.bind_addr).await?;
     tracing::info!(

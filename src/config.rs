@@ -7,6 +7,7 @@ pub struct Settings {
     pub secret_key: String,
     pub token_ttl_seconds: i64,
     pub upload_dir: PathBuf,
+    pub static_dir: Option<PathBuf>,
     pub sso_enabled: bool,
     pub oauth_enabled: bool,
 }
@@ -29,6 +30,7 @@ impl Settings {
             upload_dir: env::var("UPLOAD_DIR")
                 .unwrap_or_else(|_| "/app/uploads".to_string())
                 .into(),
+            static_dir: env::var("STATIC_DIR").ok().map(PathBuf::from),
             sso_enabled: env::var("SSO_ENABLED").is_ok_and(|value| value == "true"),
             oauth_enabled: env::var("OAUTH_ENABLED").is_ok_and(|value| value == "true"),
         })

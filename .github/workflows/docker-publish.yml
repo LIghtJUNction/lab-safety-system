@@ -30,6 +30,9 @@ jobs:
           - name: lab-safety-system-frontend
             context: ./frontend
             dockerfile: ./frontend/Dockerfile
+          - name: lab-safety-system
+            context: .
+            dockerfile: Dockerfile.integrated
 
     steps:
       - name: Checkout
