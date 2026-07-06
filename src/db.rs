@@ -58,6 +58,10 @@ const MIGRATIONS: &[&str] = &[
     )
     "#,
     r#"
+    alter table incident_cases
+    add column if not exists file_url text
+    "#,
+    r#"
     create table if not exists trainings (
         id bigserial primary key,
         title text not null,

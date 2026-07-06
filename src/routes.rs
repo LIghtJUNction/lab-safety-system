@@ -30,10 +30,13 @@ use crate::{
 pub struct AppState {
     pub pool: PgPool,
     pub settings: Settings,
-    pub passkey_registrations: Mutex<HashMap<String, (i64, PasskeyRegistration)>>,
-    pub passkey_authentications:
-        Mutex<HashMap<String, (String, PasskeyAuthentication, Vec<StoredPasskey>)>>,
+    pub passkey_registrations: Mutex<PasskeyRegistrationCache>,
+    pub passkey_authentications: Mutex<PasskeyAuthenticationCache>,
 }
+
+type PasskeyRegistrationCache = HashMap<String, (i64, PasskeyRegistration)>;
+type PasskeyAuthenticationCache =
+    HashMap<String, (String, PasskeyAuthentication, Vec<StoredPasskey>)>;
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -232,6 +235,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(upload_hazard_remediation_photo),
         )
         .route("/api/v1/analytics/dashboard", get(dashboard_stats))
+        .route("/api/v1/analytics/regulations", get(regulation_analytics))
         .route("/api/v1/analytics/incidents", get(incident_analytics))
         .route("/api/v1/analytics/hazards", get(hazard_analytics))
         .with_state(state)
@@ -986,9 +990,9 @@ async fn create_incident(
     require_admin(&actor)?;
     Ok(Json(sqlx::query_as::<_, IncidentCase>(
         r#"
-        insert into incident_cases (title, lab_name, occurred_on, severity, category, root_cause, corrective_actions)
-        values ($1, $2, $3, $4, $5, $6, $7)
-        returning id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, created_at
+        insert into incident_cases (title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        returning id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url, created_at
         "#,
     )
     .bind(payload.title)
@@ -998,6 +1002,7 @@ async fn create_incident(
     .bind(payload.category)
     .bind(payload.root_cause)
     .bind(payload.corrective_actions)
+    .bind(payload.file_url)
     .fetch_one(&state.pool)
     .await?))
 }
@@ -1010,7 +1015,7 @@ async fn list_incidents(
     require_user(&state, &headers).await?;
     let rows = sqlx::query_as::<_, IncidentCase>(
         r#"
-        select id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, created_at
+        select id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url, created_at
         from incident_cases
         where ($1::text is null or title ilike $1)
         order by occurred_on desc
@@ -1452,6 +1457,25 @@ async fn incident_analytics(
     }))
 }
 
+async fn regulation_analytics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<RegulationAnalytics>, ApiError> {
+    require_user(&state, &headers).await?;
+    Ok(Json(RegulationAnalytics {
+        by_type: count_buckets(
+            &state.pool,
+            "select regulation_type as name, count(*)::bigint as count from regulations group by regulation_type order by count desc",
+        )
+        .await?,
+        by_authority: count_buckets(
+            &state.pool,
+            "select issuing_authority as name, count(*)::bigint as count from regulations group by issuing_authority order by count desc",
+        )
+        .await?,
+    }))
+}
+
 async fn hazard_analytics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1592,4 +1616,515 @@ fn limit(value: Option<i64>) -> i64 {
 
 fn offset(value: Option<i64>) -> i64 {
     value.unwrap_or(0).max(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{header, Method, Request},
+    };
+    use sqlx::{postgres::PgPoolOptions, Executor};
+    use tower::ServiceExt;
+
+    use crate::{db, security::hash_password};
+
+    struct TestApp {
+        app: Router,
+        schema: String,
+        admin_token: String,
+        researcher_token: String,
+        researcher_id: i64,
+    }
+
+    async fn test_app() -> anyhow::Result<Option<TestApp>> {
+        let Some(database_url) = std::env::var("TEST_DATABASE_URL")
+            .ok()
+            .or_else(|| std::env::var("DATABASE_URL").ok())
+        else {
+            eprintln!("skipping postgres integration test: TEST_DATABASE_URL is not set");
+            return Ok(None);
+        };
+
+        let schema = format!("test_{}", Uuid::new_v4().simple());
+        let admin_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await?;
+        admin_pool
+            .execute(format!(r#"create schema "{schema}""#).as_str())
+            .await?;
+
+        let search_path = schema.clone();
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .after_connect(move |connection, _| {
+                let search_path = search_path.clone();
+                Box::pin(async move {
+                    connection
+                        .execute(format!(r#"set search_path to "{search_path}""#).as_str())
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&database_url)
+            .await?;
+
+        db::migrate(&pool).await?;
+        let upload_dir = tempfile::tempdir()?.keep();
+        let settings = Settings {
+            bind_addr: "127.0.0.1:0".parse()?,
+            database_url,
+            secret_key: format!("test-secret-{schema}"),
+            token_ttl_seconds: 3600,
+            upload_dir,
+            static_dir: None,
+            sso_enabled: false,
+            oauth_enabled: false,
+            sso_login_url: None,
+            oauth_login_url: None,
+            federated_login_secret: None,
+            webauthn_rp_id: "localhost".to_string(),
+            webauthn_origin: "http://localhost:5174".to_string(),
+        };
+
+        let admin_password_hash = hash_password("AdminStrong123!");
+        let researcher_password_hash = hash_password("ResearcherStrong123!");
+        let admin_id: i64 = sqlx::query_scalar(
+            r#"
+            insert into users (username, display_name, email, role, auth_provider, password_hash)
+            values ('admin', 'Admin', 'admin@example.com', 'admin', 'password', $1)
+            returning id
+            "#,
+        )
+        .bind(admin_password_hash)
+        .fetch_one(&pool)
+        .await?;
+        let researcher_id: i64 = sqlx::query_scalar(
+            r#"
+            insert into users (username, display_name, email, role, auth_provider, password_hash)
+            values ('researcher', 'Researcher', 'researcher@example.com', 'researcher', 'password', $1)
+            returning id
+            "#,
+        )
+        .bind(researcher_password_hash)
+        .fetch_one(&pool)
+        .await?;
+
+        let state = Arc::new(AppState {
+            pool,
+            settings,
+            passkey_registrations: Mutex::new(HashMap::new()),
+            passkey_authentications: Mutex::new(HashMap::new()),
+        });
+        let app = router(state.clone());
+        let admin_token = crate::security::create_access_token(
+            "admin",
+            &state.settings.secret_key,
+            state.settings.token_ttl_seconds,
+        )?;
+        let researcher_token = crate::security::create_access_token(
+            "researcher",
+            &state.settings.secret_key,
+            state.settings.token_ttl_seconds,
+        )?;
+        assert!(admin_id > 0);
+
+        Ok(Some(TestApp {
+            app,
+            schema,
+            admin_token,
+            researcher_token,
+            researcher_id,
+        }))
+    }
+
+    async fn request(
+        app: &Router,
+        method: Method,
+        path: &str,
+        token: Option<&str>,
+        body: Body,
+        content_type: Option<&str>,
+    ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
+        let mut builder = Request::builder().method(method).uri(path);
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(content_type) = content_type {
+            builder = builder.header(header::CONTENT_TYPE, content_type);
+        }
+        let response = app.clone().oneshot(builder.body(body)?).await?;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+        let value = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes)?
+        };
+        Ok((status, value))
+    }
+
+    async fn json_request(
+        app: &Router,
+        method: Method,
+        path: &str,
+        token: Option<&str>,
+        payload: serde_json::Value,
+    ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
+        request(
+            app,
+            method,
+            path,
+            token,
+            Body::from(payload.to_string()),
+            Some("application/json"),
+        )
+        .await
+    }
+
+    async fn upload(
+        app: &Router,
+        path: &str,
+        token: &str,
+        filename: &str,
+        content: &str,
+    ) -> anyhow::Result<(StatusCode, serde_json::Value)> {
+        let boundary = "x-test-boundary";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: text/plain\r\n\r\n{content}\r\n--{boundary}--\r\n"
+        );
+        request(
+            app,
+            Method::POST,
+            path,
+            Some(token),
+            Body::from(body),
+            Some(&format!("multipart/form-data; boundary={boundary}")),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn backend_safety_management_flow_is_enforced() -> anyhow::Result<()> {
+        let Some(ctx) = test_app().await? else {
+            return Ok(());
+        };
+
+        let (status, login) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/auth/password-login",
+            None,
+            serde_json::json!({
+                "username": "admin",
+                "password": "AdminStrong123!"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(login["user"]["role"], "admin");
+
+        let (status, _) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/regulations",
+            Some(&ctx.researcher_token),
+            serde_json::json!({
+                "title": "No permission",
+                "regulation_type": "internal",
+                "issuing_authority": "Lab",
+                "effective_date": "2026-01-01",
+                "summary": "researcher cannot create regulations",
+                "file_url": null
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, regulation_upload) = upload(
+            &ctx.app,
+            "/api/v1/regulations/upload",
+            &ctx.admin_token,
+            "regulation.txt",
+            "wear goggles",
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(regulation_upload["url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("/uploads/regulations/")));
+
+        let (status, regulation) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/regulations",
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "title": "危险化学品安全管理条例",
+                "regulation_type": "国家法规",
+                "issuing_authority": "国务院",
+                "effective_date": "2026-01-01",
+                "summary": "危险化学品采购、储存、使用和处置要求。",
+                "file_url": regulation_upload["url"]
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(regulation["file_url"], regulation_upload["url"]);
+
+        let (status, incident_upload) = upload(
+            &ctx.app,
+            "/api/v1/incidents/upload",
+            &ctx.admin_token,
+            "incident.txt",
+            "incident attachment",
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, incident) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/incidents",
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "title": "通风橱操作不当事故",
+                "lab_name": "有机化学实验室",
+                "occurred_on": "2026-05-10",
+                "severity": "major",
+                "category": "chemical",
+                "root_cause": "未按规程开启通风设备",
+                "corrective_actions": "重新培训并增加班前检查",
+                "file_url": incident_upload["url"]
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(incident["file_url"], incident_upload["url"]);
+
+        let (status, training) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/trainings",
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "title": "化学品入门安全培训",
+                "target_role": "researcher",
+                "status": "published",
+                "starts_on": "2026-07-01",
+                "exam_required_score": 80
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/exam-results",
+            Some(&ctx.researcher_token),
+            serde_json::json!({
+                "training_id": training["id"],
+                "user_id": ctx.researcher_id,
+                "score": 92,
+                "status": "passed"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, equipment) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/equipment",
+            Some(&ctx.admin_token),
+            serde_json::json!({
+                "asset_code": format!("HPLC-{}", ctx.schema),
+                "name": "高效液相色谱仪",
+                "lab_name": "分析测试中心",
+                "status": "available",
+                "owner": "设备管理员"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let booking_payload = serde_json::json!({
+            "equipment_id": equipment["id"],
+            "user_id": ctx.researcher_id,
+            "starts_at": "2026-07-10T02:00:00Z",
+            "ends_at": "2026-07-10T04:00:00Z",
+            "purpose": "样品检测"
+        });
+        let (status, _) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/equipment-bookings",
+            Some(&ctx.researcher_token),
+            booking_payload.clone(),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/equipment-bookings",
+            Some(&ctx.researcher_token),
+            booking_payload,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        let (status, repair) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/repair-tickets",
+            Some(&ctx.researcher_token),
+            serde_json::json!({
+                "equipment_id": equipment["id"],
+                "reported_by": ctx.researcher_id,
+                "description": "泵压异常",
+                "status": "open"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, closed_repair) = json_request(
+            &ctx.app,
+            Method::PATCH,
+            &format!("/api/v1/repair-tickets/{}", repair["id"]),
+            Some(&ctx.admin_token),
+            serde_json::json!({ "status": "closed" }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(closed_repair["status"], "closed");
+
+        let (status, issue_photo) = upload(
+            &ctx.app,
+            "/api/v1/hazards/upload/issue-photo",
+            &ctx.researcher_token,
+            "issue.txt",
+            "issue photo",
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, hazard) = json_request(
+            &ctx.app,
+            Method::POST,
+            "/api/v1/hazards",
+            Some(&ctx.researcher_token),
+            serde_json::json!({
+                "title": "试剂柜标签缺失",
+                "lab_name": "有机化学实验室",
+                "category": "chemical",
+                "description": "三号试剂柜部分瓶体缺少中文标签。",
+                "reported_by": ctx.researcher_id,
+                "issue_photo_url": issue_photo["url"]
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, claimed) = json_request(
+            &ctx.app,
+            Method::POST,
+            &format!("/api/v1/hazards/{}/claim", hazard["id"]),
+            Some(&ctx.researcher_token),
+            serde_json::json!({ "responsible_user_id": ctx.researcher_id }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(claimed["status"], "claimed");
+
+        let (status, remediation_photo) = upload(
+            &ctx.app,
+            "/api/v1/hazards/upload/remediation-photo",
+            &ctx.researcher_token,
+            "remediation.txt",
+            "fixed photo",
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, remediated) = json_request(
+            &ctx.app,
+            Method::POST,
+            &format!("/api/v1/hazards/{}/remediation", hazard["id"]),
+            Some(&ctx.researcher_token),
+            serde_json::json!({
+                "remediation_photo_url": remediation_photo["url"],
+                "remediation_note": "已补充标签并复核。"
+            }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(remediated["status"], "remediation_submitted");
+
+        let (status, _) = json_request(
+            &ctx.app,
+            Method::PATCH,
+            &format!("/api/v1/hazards/{}/status", hazard["id"]),
+            Some(&ctx.researcher_token),
+            serde_json::json!({ "status": "closed" }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, closed_hazard) = json_request(
+            &ctx.app,
+            Method::PATCH,
+            &format!("/api/v1/hazards/{}/status", hazard["id"]),
+            Some(&ctx.admin_token),
+            serde_json::json!({ "status": "closed" }),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(closed_hazard["status"], "closed");
+
+        for path in [
+            "/api/v1/regulations?q=危险化学品",
+            "/api/v1/incidents",
+            "/api/v1/trainings",
+            "/api/v1/equipment",
+            "/api/v1/equipment-bookings",
+            "/api/v1/repair-tickets",
+            "/api/v1/hazards",
+        ] {
+            let (status, value) = request(
+                &ctx.app,
+                Method::GET,
+                path,
+                Some(&ctx.researcher_token),
+                Body::empty(),
+                None,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(
+                value.as_array().is_some_and(|items| !items.is_empty()),
+                "{path}"
+            );
+        }
+
+        for path in [
+            "/api/v1/analytics/dashboard",
+            "/api/v1/analytics/regulations",
+            "/api/v1/analytics/incidents",
+            "/api/v1/analytics/hazards",
+        ] {
+            let (status, value) = request(
+                &ctx.app,
+                Method::GET,
+                path,
+                Some(&ctx.admin_token),
+                Body::empty(),
+                None,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{path}: {value}");
+        }
+
+        Ok(())
+    }
 }

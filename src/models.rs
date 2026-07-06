@@ -91,6 +91,7 @@ pub struct IncidentCase {
     pub category: String,
     pub root_cause: String,
     pub corrective_actions: String,
+    pub file_url: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -103,6 +104,7 @@ pub struct IncidentCaseCreate {
     pub category: String,
     pub root_cause: String,
     pub corrective_actions: String,
+    pub file_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -268,6 +270,12 @@ pub struct CountBucket {
 pub struct IncidentAnalytics {
     pub by_category: Vec<CountBucket>,
     pub by_severity: Vec<CountBucket>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegulationAnalytics {
+    pub by_type: Vec<CountBucket>,
+    pub by_authority: Vec<CountBucket>,
 }
 
 #[derive(Debug, Serialize)]

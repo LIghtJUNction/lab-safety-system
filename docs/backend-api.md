@@ -1,41 +1,34 @@
 # 后端功能与前端对接指南
 
-本文档描述 Rust 后端当前已经提供的能力，以及前端如何对接。后端是本项目的主工程，前端以 `frontend/` Git 子模块维护。
+本文档描述 Rust 后端当前提供的能力，以及前端如何对接。主仓库是后端工程，前端以 `frontend/` Git 子模块维护。
 
 ## 基本约定
 
 - API 前缀：`/api/v1`
-- 数据格式：除文件上传外，请求和响应均为 JSON
-- 鉴权方式：受保护接口使用 `Authorization: Bearer <access_token>`
-- 错误格式：`{ "detail": "错误说明" }`
-- 时间格式：`DateTime<Utc>` 字段使用 ISO 8601 字符串，日期字段使用 `YYYY-MM-DD`
-- 上传文件：使用 `multipart/form-data`，文件字段名为 `file`
+- 数据格式：除文件上传外，请求和响应均为 JSON。
+- 鉴权方式：受保护接口使用 `Authorization: Bearer <access_token>`。
+- 错误格式：`{ "detail": "错误说明" }`。
+- 时间格式：`DateTime<Utc>` 使用 ISO 8601 字符串，日期字段使用 `YYYY-MM-DD`。
+- 上传文件：使用 `multipart/form-data`，文件字段名固定为 `file`。
 
-## 后端提供的功能
+## 后端能力
 
-- 认证登录：账号密码登录、Passkey 登录、SSO 回调、OAuth 回调
-- 会话校验：获取当前登录用户信息
-- 用户管理：管理员通过 API 创建和查询普通用户；超级管理员通过命令行管理用户
-- 实验室安全隐患管理：隐患上报、问题照片上传、责任认领、整改照片上传、整改提交、状态流转、统计分析
-- 法规条例：列表、创建、文件上传
-- 事故案例：列表、创建、文件上传
-- 安全培训和考核：培训列表/创建、考试结果列表/创建
-- 设备和预约：设备列表/创建、预约列表/创建
-- 报修工单：报修列表/创建、管理员更新状态
-- 数据统计：综合仪表盘、事故统计、隐患统计
-- 健康检查：容器和数据库可用性检查
+- 认证登录：账号密码、Passkey、SSO 签名回调、OAuth 签名回调。
+- 用户管理：管理员通过 API 创建和查询用户；超级管理员通过命令行管理用户。
+- 法规条例：附件上传、创建、查询、按类型和发布机构统计。
+- 事故案例：附件上传、创建、查询、按分类和严重程度统计。
+- 安全培训：培训创建/查询，考核结果创建/查询。
+- 实验设备：设备创建/查询，预约创建/查询，报修创建/查询/状态更新。
+- 安全隐患：问题照片上传、隐患上报、责任认领、整改照片上传、整改提交、管理员关闭、统计。
+- 健康检查：进程健康和数据库可用性检查。
 
 ## 角色与权限
 
-当前角色有三类：
-
-| 角色 | 来源 | 说明 |
-| --- | --- | --- |
-| `super_admin` | 只能通过命令行创建和维护 | 超级管理员，可以执行命令行用户管理；API 中按管理员权限访问 |
-| `admin` | 命令行或管理员 API 创建 | 管理员，可以访问管理端功能 |
-| `researcher` | 命令行、管理员 API、SSO/OAuth 自动创建 | 普通用户，只能访问本人相关安全任务 |
-
-权限规则：
+| 角色 | 说明 |
+| --- | --- |
+| `super_admin` | 只能通过命令行创建和维护；API 中按管理员权限访问。 |
+| `admin` | 管理员，可以访问管理端功能。 |
+| `researcher` | 普通用户，只能访问本人相关安全任务。 |
 
 | 能力 | `super_admin` | `admin` | `researcher` |
 | --- | --- | --- | --- |
@@ -52,12 +45,12 @@
 | 查看所有隐患/预约/报修/考核 | 是 | 是 | 否 |
 | 查看本人隐患/预约/报修/考核 | 是 | 是 | 是 |
 
-前端应根据 `GET /auth/me` 或登录响应中的 `user.role` 切换界面：
+前端应根据登录响应或 `GET /auth/me` 的 `user.role` 切换界面：
 
-- `admin` / `super_admin`：进入管理端，显示用户、法规、事故、培训、设备、隐患、报修和统计。
-- `researcher`：进入普通用户端，只显示本人隐患、整改任务、培训考核、预约和报修。
+- `admin` / `super_admin`：进入管理端。
+- `researcher`：进入普通用户端。
 
-## 认证流程
+## 认证接口
 
 ### 查询登录方式
 
@@ -76,12 +69,6 @@ GET /api/v1/auth/methods
   "oauth_login_url": null
 }
 ```
-
-前端登录页应先调用此接口：
-
-- `password=true` 时显示账号密码登录。
-- `sso=true` 且 `sso_login_url` 非空时显示 SSO 按钮，并跳转该 URL。
-- `oauth=true` 且 `oauth_login_url` 非空时显示 OAuth 按钮，并跳转该 URL。
 
 ### 账号密码登录
 
@@ -113,29 +100,21 @@ Content-Type: application/json
 }
 ```
 
-前端拿到 `access_token` 后，应保存到内存或安全的会话存储，并为后续请求添加：
-
-```http
-Authorization: Bearer jwt-token
-```
-
-### 获取当前用户
+### 当前用户
 
 ```http
 GET /api/v1/auth/me
 Authorization: Bearer <access_token>
 ```
 
-响应字段同登录响应里的 `user`。
-
 ### SSO / OAuth 回调
 
-后端提供两个回调地址：
+回调地址：
 
 - `GET /api/v1/auth/sso/callback`
 - `GET /api/v1/auth/oauth/callback`
 
-身份提供方或上游网关需要带上以下 query 参数：
+上游身份系统需要传入 query 参数：
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
@@ -146,9 +125,9 @@ Authorization: Bearer <access_token>
 | `department` | 否 | 部门 |
 | `exp` | 是 | Unix 秒级过期时间 |
 | `sig` | 是 | HMAC-SHA256 签名 |
-| `redirect` | 否 | 登录成功后跳回的前端本地路径，必须是 `/` 开头的站内路径 |
+| `redirect` | 否 | 登录成功后的站内跳转路径，必须以 `/` 开头 |
 
-签名原文为 7 行换行拼接：
+签名原文：
 
 ```text
 provider
@@ -160,26 +139,17 @@ department
 exp
 ```
 
-其中 `provider` 是 `sso` 或 `oauth`。签名使用 `FEDERATED_LOGIN_SECRET` 做 HMAC-SHA256，再用 base64url no padding 编码。
-
-回调成功后，后端会自动创建或更新用户，并把会话放到前端 hash：
+`provider` 为 `sso` 或 `oauth`。使用 `FEDERATED_LOGIN_SECRET` 做 HMAC-SHA256，并用 base64url no padding 编码。成功后，后端会把会话写入：
 
 ```text
 /#session=<base64url-json>
 ```
 
-前端需要在启动时解析 `location.hash`：
+前端应解析 hash 中的 `session`，保存 `access_token`，然后清理 URL hash。
 
-1. 如果存在 `session=`，base64url 解码成 `AuthSession`。
-2. 保存 `access_token`。
-3. 清理 URL hash，避免 token 长时间留在地址栏。
-4. 根据 `session.user.role` 切换管理端或普通用户端。
+### Passkey
 
-联邦登录不能创建 `super_admin`。超级管理员只能通过命令行创建。
-
-### Passkey 登录
-
-Passkey 登录分两步：
+Passkey 登录：
 
 ```http
 POST /api/v1/auth/passkey/login/start
@@ -188,22 +158,7 @@ Content-Type: application/json
 { "username": "researcher01" }
 ```
 
-响应：
-
-```json
-{
-  "challenge_id": "uuid",
-  "options": {}
-}
-```
-
-前端把 `options` 传给浏览器：
-
-```ts
-const credential = await navigator.credentials.get({ publicKey: options });
-```
-
-然后提交：
+前端将响应里的 `options` 传给 `navigator.credentials.get`，再调用：
 
 ```http
 POST /api/v1/auth/passkey/login/finish
@@ -215,24 +170,14 @@ Content-Type: application/json
 }
 ```
 
-响应同账号密码登录。
-
-### Passkey 绑定
-
-绑定 Passkey 需要用户已经登录：
+绑定 Passkey 需要已登录：
 
 ```http
 POST /api/v1/auth/passkey/register/start
 Authorization: Bearer <access_token>
 ```
 
-前端拿到 `options` 后调用：
-
-```ts
-const credential = await navigator.credentials.create({ publicKey: options });
-```
-
-然后提交：
+前端将响应里的 `options` 传给 `navigator.credentials.create`，再调用：
 
 ```http
 POST /api/v1/auth/passkey/register/finish
@@ -246,14 +191,7 @@ Content-Type: application/json
 }
 ```
 
-查询已绑定 Passkey：
-
-```http
-GET /api/v1/auth/passkeys
-Authorization: Bearer <access_token>
-```
-
-生产环境必须正确配置：
+生产环境必须配置：
 
 ```env
 WEBAUTHN_RP_ID=lab.example.com
@@ -261,6 +199,8 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 ```
 
 ## API 目录
+
+所有路径以下均省略 `/api/v1` 前缀。
 
 ### 健康检查
 
@@ -273,7 +213,7 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/auth/methods` | 否 | 查询可用登录方式 |
+| GET | `/auth/methods` | 否 | 查询登录方式 |
 | POST | `/auth/password-login` | 否 | 账号密码登录 |
 | GET | `/auth/me` | 是 | 当前用户 |
 | GET | `/auth/sso/callback` | 否 | SSO 签名回调 |
@@ -286,14 +226,12 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 
 ### 用户
 
-| 方法 | 路径 | 鉴权 | 权限 | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/users` | 是 | 管理员 | 查询用户 |
-| POST | `/users` | 是 | 管理员 | 创建 `admin` 或 `researcher` |
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/users` | 管理员 | 查询用户，支持 `q`、`role`、`limit`、`offset` |
+| POST | `/users` | 管理员 | 创建 `admin` 或 `researcher` |
 
-查询参数：`q`、`role`、`limit`、`offset`。
-
-创建用户请求：
+创建用户：
 
 ```json
 {
@@ -307,23 +245,17 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 }
 ```
 
-说明：
-
-- API 只能创建 `admin` 和 `researcher`。
-- `auth_provider=password` 时必须提供强密码。
-- `auth_provider` 可为 `password`、`sso`、`oauth`。
+API 只能创建 `admin` 和 `researcher`。`super_admin` 只能通过命令行创建。
 
 ### 法规条例
 
-| 方法 | 路径 | 鉴权 | 权限 | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/regulations` | 是 | 登录用户 | 查询法规 |
-| POST | `/regulations` | 是 | 管理员 | 创建法规 |
-| POST | `/regulations/upload` | 是 | 管理员 | 上传法规文件 |
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/regulations` | 登录用户 | 查询法规，支持 `q`、`limit`、`offset` |
+| POST | `/regulations` | 管理员 | 创建法规 |
+| POST | `/regulations/upload` | 管理员 | 上传法规文件 |
 
-查询参数：`q`、`limit`、`offset`。
-
-创建请求：
+创建法规：
 
 ```json
 {
@@ -338,13 +270,13 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 
 ### 事故案例
 
-| 方法 | 路径 | 鉴权 | 权限 | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/incidents` | 是 | 登录用户 | 查询事故案例 |
-| POST | `/incidents` | 是 | 管理员 | 创建事故案例 |
-| POST | `/incidents/upload` | 是 | 管理员 | 上传事故附件 |
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/incidents` | 登录用户 | 查询事故案例，支持 `q`、`limit`、`offset` |
+| POST | `/incidents` | 管理员 | 创建事故案例 |
+| POST | `/incidents/upload` | 管理员 | 上传事故附件 |
 
-创建请求：
+创建事故案例：
 
 ```json
 {
@@ -354,22 +286,21 @@ WEBAUTHN_ORIGIN=https://lab.example.com
   "severity": "major",
   "category": "chemical",
   "root_cause": "未按规程开启通风设备",
-  "corrective_actions": "重新培训并增加班前检查"
+  "corrective_actions": "重新培训并增加班前检查",
+  "file_url": "/uploads/incidents/example.pdf"
 }
 ```
 
 ### 培训与考核
 
-| 方法 | 路径 | 鉴权 | 权限 | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/trainings` | 是 | 登录用户 | 查询培训 |
-| POST | `/trainings` | 是 | 管理员 | 创建培训 |
-| GET | `/exam-results` | 是 | 登录用户 | 查询考核结果；普通用户仅本人 |
-| POST | `/exam-results` | 是 | 本人或管理员 | 创建考核结果 |
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/trainings` | 登录用户 | 查询培训，支持 `status`、`limit`、`offset` |
+| POST | `/trainings` | 管理员 | 创建培训 |
+| GET | `/exam-results` | 登录用户 | 查询考核结果；普通用户仅本人 |
+| POST | `/exam-results` | 本人或管理员 | 创建考核结果 |
 
-`GET /trainings` 查询参数：`status`、`limit`、`offset`。
-
-创建培训请求：
+创建培训：
 
 ```json
 {
@@ -381,7 +312,7 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 }
 ```
 
-创建考核请求：
+创建考核结果：
 
 ```json
 {
@@ -394,19 +325,17 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 
 ### 设备、预约与报修
 
-| 方法 | 路径 | 鉴权 | 权限 | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/equipment` | 是 | 登录用户 | 查询设备 |
-| POST | `/equipment` | 是 | 管理员 | 创建设备 |
-| GET | `/equipment-bookings` | 是 | 登录用户 | 查询预约；普通用户仅本人 |
-| POST | `/equipment-bookings` | 是 | 本人或管理员 | 创建预约 |
-| GET | `/repair-tickets` | 是 | 登录用户 | 查询报修；普通用户仅本人 |
-| POST | `/repair-tickets` | 是 | 本人或管理员 | 创建报修 |
-| PATCH | `/repair-tickets/{id}` | 是 | 管理员 | 更新报修状态 |
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/equipment` | 登录用户 | 查询设备，支持 `q`、`status`、`limit`、`offset` |
+| POST | `/equipment` | 管理员 | 创建设备 |
+| GET | `/equipment-bookings` | 登录用户 | 查询预约；普通用户仅本人 |
+| POST | `/equipment-bookings` | 本人或管理员 | 创建预约 |
+| GET | `/repair-tickets` | 登录用户 | 查询报修；普通用户仅本人 |
+| POST | `/repair-tickets` | 本人或管理员 | 创建报修 |
+| PATCH | `/repair-tickets/{id}` | 管理员 | 更新报修状态 |
 
-`GET /equipment` 查询参数：`q`、`status`、`limit`、`offset`。
-
-创建设备请求：
+创建设备：
 
 ```json
 {
@@ -418,7 +347,7 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 }
 ```
 
-创建预约请求：
+创建预约：
 
 ```json
 {
@@ -432,7 +361,7 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 
 后端会拒绝结束时间早于开始时间、以及同一设备时间重叠的预约。
 
-创建报修请求：
+创建报修：
 
 ```json
 {
@@ -453,32 +382,19 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 
 ### 安全隐患
 
-| 方法 | 路径 | 鉴权 | 权限 | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/hazards` | 是 | 登录用户 | 查询隐患；普通用户仅本人相关 |
-| POST | `/hazards` | 是 | 本人或管理员 | 上报隐患 |
-| POST | `/hazards/{id}/claim` | 是 | 本人或管理员 | 认领责任人 |
-| POST | `/hazards/{id}/remediation` | 是 | 责任人或管理员 | 提交整改 |
-| PATCH | `/hazards/{id}/status` | 是 | 管理员 | 更新状态 |
-| POST | `/hazards/upload/issue-photo` | 是 | 登录用户 | 上传问题照片 |
-| POST | `/hazards/upload/remediation-photo` | 是 | 登录用户 | 上传整改照片 |
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/hazards` | 登录用户 | 查询隐患；普通用户仅本人相关 |
+| POST | `/hazards` | 本人或管理员 | 上报隐患 |
+| POST | `/hazards/{id}/claim` | 本人或管理员 | 认领责任人 |
+| POST | `/hazards/{id}/remediation` | 责任人或管理员 | 提交整改 |
+| PATCH | `/hazards/{id}/status` | 管理员 | 更新状态 |
+| POST | `/hazards/upload/issue-photo` | 登录用户 | 上传问题照片 |
+| POST | `/hazards/upload/remediation-photo` | 登录用户 | 上传整改照片 |
 
-`GET /hazards` 查询参数：
+`GET /hazards` 支持 `q`、`status`、`responsible_user_id`、`reported_by`、`limit`、`offset`。
 
-- `q`：标题或描述模糊搜索
-- `status`：按状态过滤
-- `responsible_user_id`：按责任人过滤
-- `reported_by`：按上报人过滤
-- `limit` / `offset`：分页
-
-隐患状态由后端写入或管理员更新，当前常用值：
-
-- `reported`：已上报，数据库默认值
-- `claimed`：已认领
-- `remediation_submitted`：已提交整改
-- `closed`：已关闭
-
-上报隐患请求：
+上报隐患：
 
 ```json
 {
@@ -491,7 +407,7 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 }
 ```
 
-认领请求：
+认领：
 
 ```json
 {
@@ -499,7 +415,7 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 }
 ```
 
-提交整改请求：
+提交整改：
 
 ```json
 {
@@ -508,7 +424,7 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 }
 ```
 
-管理员更新状态：
+管理员关闭：
 
 ```json
 {
@@ -518,14 +434,7 @@ WEBAUTHN_ORIGIN=https://lab.example.com
 
 ### 文件上传
 
-上传接口均使用：
-
-```http
-Content-Type: multipart/form-data
-Authorization: Bearer <access_token>
-```
-
-字段名固定为 `file`。响应：
+上传接口使用 `multipart/form-data`，字段名为 `file`。响应：
 
 ```json
 {
@@ -536,30 +445,36 @@ Authorization: Bearer <access_token>
 }
 ```
 
-前端应把返回的 `url` 写入后续业务创建或整改提交请求。
+前端应把返回的 `url` 写入后续业务创建或整改请求。
 
 ### 统计
 
-| 方法 | 路径 | 鉴权 | 权限 | 说明 |
-| --- | --- | --- | --- | --- |
-| GET | `/analytics/dashboard` | 是 | 登录用户 | 综合统计 |
-| GET | `/analytics/incidents` | 是 | 登录用户 | 事故分类和严重程度统计 |
-| GET | `/analytics/hazards` | 是 | 登录用户 | 隐患状态和分类统计；普通用户仅本人相关 |
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/analytics/dashboard` | 登录用户 | 综合统计 |
+| GET | `/analytics/regulations` | 登录用户 | 法规类型和发布机构统计 |
+| GET | `/analytics/incidents` | 登录用户 | 事故分类和严重程度统计 |
+| GET | `/analytics/hazards` | 登录用户 | 隐患状态和分类统计；普通用户仅本人相关 |
 
-`GET /analytics/dashboard` 响应：
+法规统计响应：
 
 ```json
 {
-  "regulation_count": 10,
-  "incident_count": 3,
-  "training_count": 5,
-  "equipment_count": 20,
-  "open_repair_count": 2,
-  "exam_pass_rate": 0.92
+  "by_type": [{ "name": "国家法规", "count": 4 }],
+  "by_authority": [{ "name": "国务院", "count": 2 }]
 }
 ```
 
-`GET /analytics/hazards` 响应：
+事故统计响应：
+
+```json
+{
+  "by_category": [{ "name": "chemical", "count": 2 }],
+  "by_severity": [{ "name": "major", "count": 1 }]
+}
+```
+
+隐患统计响应：
 
 ```json
 {
@@ -570,9 +485,31 @@ Authorization: Bearer <access_token>
 
 ## 前端对接建议
 
-### API Client
+### 启动顺序
 
-前端建议统一封装请求函数：
+1. 调用 `GET /auth/methods` 渲染登录入口。
+2. 检查 URL hash 中是否有 `session=`，用于接收 SSO/OAuth 回调结果。
+3. 如果已有本地 token，调用 `GET /auth/me` 校验。
+4. 根据角色渲染管理端或普通用户端。
+
+### 普通用户核心流程
+
+1. 上传问题照片：`POST /hazards/upload/issue-photo`
+2. 上报隐患：`POST /hazards`
+3. 查询本人相关隐患：`GET /hazards`
+4. 认领责任：`POST /hazards/{id}/claim`
+5. 上传整改照片：`POST /hazards/upload/remediation-photo`
+6. 提交整改：`POST /hazards/{id}/remediation`
+
+### 管理端核心流程
+
+1. 查询统计：`GET /analytics/dashboard`、`GET /analytics/regulations`、`GET /analytics/incidents`、`GET /analytics/hazards`
+2. 查询所有隐患：`GET /hazards`
+3. 分配责任人：`POST /hazards/{id}/claim`
+4. 审核后关闭：`PATCH /hazards/{id}/status`
+5. 维护用户、法规、事故、培训、设备基础数据
+
+### API Client 示例
 
 ```ts
 const API_BASE = "/api/v1";
@@ -589,53 +526,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers,
-  });
-
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.detail ?? `Request failed: ${response.status}`);
   }
-
   return response.json() as Promise<T>;
 }
 ```
-
-### 启动顺序
-
-1. 调用 `GET /auth/methods` 渲染登录入口。
-2. 检查 URL hash 中是否有 `session=`，用于接收 SSO/OAuth 回调结果。
-3. 如果已有本地会话 token，调用 `GET /auth/me` 校验。
-4. 根据角色渲染管理端或普通用户端。
-
-### 普通用户端核心流程
-
-1. 上传问题照片：`POST /hazards/upload/issue-photo`
-2. 上报隐患：`POST /hazards`
-3. 查询本人相关隐患：`GET /hazards`
-4. 认领责任：`POST /hazards/{id}/claim`
-5. 上传整改照片：`POST /hazards/upload/remediation-photo`
-6. 提交整改：`POST /hazards/{id}/remediation`
-
-### 管理端核心流程
-
-1. 查询统计：`GET /analytics/dashboard`、`GET /analytics/hazards`
-2. 查询所有隐患：`GET /hazards`
-3. 分配责任人：`POST /hazards/{id}/claim`
-4. 审核后关闭：`PATCH /hazards/{id}/status`
-5. 维护基础数据：法规、事故、培训、设备、用户
-
-### 分页和过滤
-
-支持分页的接口使用 `limit` 和 `offset`：
-
-```http
-GET /api/v1/hazards?status=reported&limit=20&offset=0
-```
-
-后端会把 `limit` 限制在 `1..100`，缺省为 `50`；`offset` 缺省为 `0`。
 
 ## 后端环境变量
 
@@ -657,8 +555,6 @@ GET /api/v1/hazards?status=reported&limit=20&offset=0
 | `WEBAUTHN_ORIGIN` | Passkey Origin |
 
 ## 命令行用户管理
-
-命令行用户管理是后端能力的一部分，仅超级管理员可用。
 
 首次部署创建超级管理员：
 
