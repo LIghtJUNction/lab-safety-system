@@ -43,9 +43,13 @@ def test_create_and_query_core_records() -> None:
             "email": "admin@example.com",
             "role": "admin",
             "department": "安全办公室",
+            "password": "ChangeMe123!",
         },
     )
     assert user.status_code == 200
+    login = client.post("/api/v1/auth/password-login", json={"username": "admin", "password": "ChangeMe123!"})
+    assert login.status_code == 200
+    assert login.json()["token_type"] == "bearer"
 
     regulation = client.post(
         "/api/v1/regulations",
@@ -75,3 +79,15 @@ def test_create_and_query_core_records() -> None:
     stats = client.get("/api/v1/analytics/dashboard").json()
     assert stats["regulation_count"] == 1
     assert stats["incident_count"] == 1
+
+
+def test_upload_regulation_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("app.config.settings.upload_dir", str(tmp_path))
+    monkeypatch.setattr("app.api.settings.upload_dir", str(tmp_path))
+    client = build_client()
+    response = client.post(
+        "/api/v1/regulations/upload",
+        files={"file": ("rule.txt", b"safe lab rule", "text/plain")},
+    )
+    assert response.status_code == 200
+    assert response.json()["size"] == len(b"safe lab rule")

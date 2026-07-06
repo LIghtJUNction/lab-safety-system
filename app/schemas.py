@@ -20,12 +20,31 @@ class UserCreate(BaseModel):
     role: UserRole = UserRole.researcher
     auth_provider: str = "password"
     department: str | None = None
+    password: str | None = None
 
 
 class UserRead(UserCreate):
     model_config = ConfigDict(from_attributes=True)
     id: int
     created_at: datetime
+    password: None = None
+
+
+class PasswordLogin(BaseModel):
+    username: str
+    password: str
+
+
+class AuthToken(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class AuthMethods(BaseModel):
+    password: bool = True
+    sso: bool
+    oauth: bool
 
 
 class RegulationCreate(BaseModel):
@@ -135,3 +154,9 @@ class DashboardStats(BaseModel):
     open_repair_count: int
     exam_pass_rate: float
 
+
+class UploadedFile(BaseModel):
+    filename: str
+    content_type: str | None
+    size: int
+    url: str

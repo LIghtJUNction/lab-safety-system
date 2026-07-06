@@ -78,6 +78,10 @@ docker compose down
 - `POSTGRES_USER`
 - `POSTGRES_PASSWORD`
 - `DATABASE_URL`
+- `SECRET_KEY`
+- `UPLOAD_DIR`
+- `SSO_ENABLED`
+- `OAUTH_ENABLED`
 
 默认端口：
 

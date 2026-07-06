@@ -1,6 +1,9 @@
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, Query
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -18,6 +21,8 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    AuthMethods,
+    AuthToken,
     DashboardStats,
     EquipmentBookingCreate,
     EquipmentBookingRead,
@@ -27,6 +32,7 @@ from app.schemas import (
     ExamResultRead,
     IncidentCaseCreate,
     IncidentCaseRead,
+    PasswordLogin,
     RegulationCreate,
     RegulationRead,
     RepairTicketCreate,
@@ -35,7 +41,10 @@ from app.schemas import (
     TrainingRead,
     UserCreate,
     UserRead,
+    UploadedFile,
 )
+from app.config import settings
+from app.security import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix="/api/v1")
 ModelT = TypeVar("ModelT")
@@ -53,9 +62,25 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/auth/methods", response_model=AuthMethods)
+def auth_methods() -> AuthMethods:
+    return AuthMethods(sso=settings.sso_enabled, oauth=settings.oauth_enabled)
+
+
+@router.post("/auth/password-login", response_model=AuthToken)
+def password_login(payload: PasswordLogin, db: Session = Depends(get_db)) -> AuthToken:
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    return AuthToken(access_token=create_access_token(user.username), expires_in=settings.token_ttl_seconds)
+
+
 @router.post("/users", response_model=UserRead)
 def create_user(payload: UserCreate, db: Session = Depends(get_db)) -> User:
-    return add_record(db, User(**payload.model_dump()))
+    data = payload.model_dump(exclude={"password"})
+    if payload.password:
+        data["password_hash"] = hash_password(payload.password)
+    return add_record(db, User(**data))
 
 
 @router.get("/users", response_model=list[UserRead])
@@ -76,6 +101,11 @@ def list_regulations(q: str | None = Query(default=None), db: Session = Depends(
     return list(db.scalars(stmt))
 
 
+@router.post("/regulations/upload", response_model=UploadedFile)
+async def upload_regulation_file(file: UploadFile = File(...)) -> UploadedFile:
+    return await save_upload(file, "regulations")
+
+
 @router.post("/incidents", response_model=IncidentCaseRead)
 def create_incident(payload: IncidentCaseCreate, db: Session = Depends(get_db)) -> IncidentCase:
     return add_record(db, IncidentCase(**payload.model_dump()))
@@ -87,6 +117,11 @@ def list_incidents(q: str | None = Query(default=None), db: Session = Depends(ge
     if q:
         stmt = stmt.where(IncidentCase.title.ilike(f"%{q}%"))
     return list(db.scalars(stmt))
+
+
+@router.post("/incidents/upload", response_model=UploadedFile)
+async def upload_incident_file(file: UploadFile = File(...)) -> UploadedFile:
+    return await save_upload(file, "incidents")
 
 
 @router.post("/trainings", response_model=TrainingRead)
@@ -155,3 +190,19 @@ def dashboard_stats(db: Session = Depends(get_db)) -> DashboardStats:
         exam_pass_rate=round(passed_results / total_results, 4) if total_results else 0.0,
     )
 
+
+async def save_upload(file: UploadFile, category: str) -> UploadedFile:
+    content = await file.read()
+    safe_name = Path(file.filename or "upload.bin").name
+    stored_name = f"{uuid4().hex}-{safe_name}"
+    target_dir = Path(settings.upload_dir) / category
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / stored_name
+    target.write_bytes(content)
+    return UploadedFile(
+        filename=safe_name,
+        content_type=file.content_type,
+        size=len(content),
+        url=f"/uploads/{category}/{stored_name}",
+    )
+    PasswordLogin,

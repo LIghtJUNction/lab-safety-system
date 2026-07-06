@@ -70,6 +70,8 @@ class User(TimestampMixin, Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.researcher)
     auth_provider: Mapped[str] = mapped_column(String(40), default="password")
     department: Mapped[str | None] = mapped_column(String(160))
+    password_hash: Mapped[str | None] = mapped_column(String(260))
+    is_active: Mapped[bool] = mapped_column(default=True)
 
 
 class Regulation(TimestampMixin, Base):

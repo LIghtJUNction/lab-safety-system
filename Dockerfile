@@ -12,6 +12,7 @@ COPY pyproject.toml README.md LICENSE ./
 RUN pip install --no-cache-dir .
 
 COPY app ./app
+RUN mkdir -p /app/uploads && chown -R app:app /app/uploads
 
 ENV APP_ENV=production
 ENV APP_HOST=0.0.0.0
