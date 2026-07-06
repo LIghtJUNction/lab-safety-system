@@ -5,6 +5,7 @@
 - 后端仓库：`lab-safety-system`，提供认证授权、业务 API、文件上传、命令行用户管理和 PostgreSQL 数据访问。
 - 前端子模块：`frontend/`，提供实验室安全管理界面。
 - 前端仓库：<https://github.com/LIghtJUNction/lab-safety-system-frontend>
+- 后端功能与前端对接文档：[`docs/backend-api.md`](./docs/backend-api.md)
 
 ## 功能范围
 
@@ -188,7 +189,7 @@ exp
 
 ## Passkey
 
-Passkey 使用浏览器 WebAuthn API。用户必须先用账号密码、SSO 或 OAuth 登录，再在右上角用户区域点击 `Passkey` 绑定；之后登录页密码框右侧可以使用 `Passkey` 登录。
+Passkey 使用浏览器 WebAuthn API。用户必须先用账号密码、SSO 或 OAuth 登录，再在个人资料界面绑定 Passkey；之后登录页可以使用 Passkey 登录。
 
 生产部署必须把 WebAuthn 的 RP ID 和 Origin 配成真实访问域名，否则浏览器会拒绝凭据：
 
@@ -265,7 +266,7 @@ E2E_BASE_URL=http://localhost:5174 \
 E2E_ADMIN_USER=cli_super \
 E2E_ADMIN_PASSWORD='StrongerAdmin123!' \
 E2E_FEDERATED_SECRET='federated-local-secret' \
-npm run e2e:smoke
+  npm run e2e:smoke
 ```
 
 如果部署环境未启用 SSO/OAuth，登录页会显示对应入口未配置；后端回调只有在 `SSO_ENABLED` / `OAUTH_ENABLED` 和 `FEDERATED_LOGIN_SECRET` 配置正确时才会接受已签名的身份提供方回调。
