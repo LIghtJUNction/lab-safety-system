@@ -197,8 +197,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/oauth/callback", get(oauth_callback))
         .route("/api/v1/auth/me", get(auth_me))
         .route("/api/v1/auth/my-labs", get(my_labs))
+        .route(
+            "/api/v1/settings/login-carousel",
+            get(get_login_carousel)
+                .patch(update_login_carousel)
+                .delete(reset_login_carousel),
+        )
         .route("/api/v1/users", get(list_users).post(create_user))
         .route("/api/v1/users/{id}", patch(update_user))
+        .route(
+            "/api/v1/invitations",
+            get(list_invitations).post(create_invitation),
+        )
+        .route("/api/v1/invitations/{id}", delete(delete_invitation))
+        .route("/api/v1/invitations/{id}/users", get(get_invitation_users))
+        .route(
+            "/api/v1/invitations/public/{code}",
+            get(get_public_invitation),
+        )
+        .route("/api/v1/invitations/register", post(register_by_invitation))
         .route("/api/v1/labs", get(list_labs).post(create_lab))
         .route("/api/v1/labs/{id}", get(get_lab).patch(update_lab))
         .route(
@@ -853,6 +870,121 @@ async fn my_labs(
         .await?
     };
     Ok(Json(memberships))
+}
+
+// Defaults matching frontend introSlides
+fn default_login_carousel() -> LoginCarouselSettings {
+    let zh = vec![
+        CarouselSlide {
+            stat: "隐患闭环".to_string(),
+            title: "实验室安全管理平台".to_string(),
+            body: "统一处理隐患上报、责任认领、整改照片、培训考核、设备预约和报修工单。"
+                .to_string(),
+        },
+        CarouselSlide {
+            stat: "分角色视图".to_string(),
+            title: "管理端与普通用户分离".to_string(),
+            body: "管理员聚合统计、用户和台账；普通用户只处理自己的上报、认领与整改任务。"
+                .to_string(),
+        },
+        CarouselSlide {
+            stat: "安全登录".to_string(),
+            title: "支持多种身份入口".to_string(),
+            body: "账号密码、Passkey、SSO 和 OAuth 可按部署环境组合使用，超级管理员仍由 CLI 控制。"
+                .to_string(),
+        },
+    ];
+    let en = vec![
+        CarouselSlide {
+            stat: "Hazard closure".to_string(),
+            title: "Closed-loop lab safety platform".to_string(),
+            body: "Track hazards, ownership, remediation photos, training, bookings, and repair tickets in one workflow.".to_string(),
+        },
+        CarouselSlide {
+            stat: "Role-based UI".to_string(),
+            title: "Separate admin and user views".to_string(),
+            body: "Administrators manage analytics and registries; normal users focus on their own reports and remediation tasks.".to_string(),
+        },
+        CarouselSlide {
+            stat: "Secure sign-in".to_string(),
+            title: "Multiple identity options".to_string(),
+            body: "Password, Passkey, SSO, and OAuth can be combined per deployment while super admins stay CLI-governed.".to_string(),
+        },
+    ];
+    LoginCarouselSettings { zh, en }
+}
+
+async fn get_login_carousel(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<LoginCarouselSettings>, ApiError> {
+    // Public endpoint - no auth required so login page can fetch it
+    let row: Option<SiteSetting> =
+        sqlx::query_as("select key, value from site_settings where key = 'login_carousel' limit 1")
+            .fetch_optional(&state.pool)
+            .await?;
+
+    if let Some(row) = row {
+        if let Ok(parsed) = serde_json::from_value::<LoginCarouselSettings>(row.value) {
+            if !parsed.zh.is_empty() || !parsed.en.is_empty() {
+                return Ok(Json(parsed));
+            }
+        }
+    }
+
+    // Fallback to built-in defaults
+    Ok(Json(default_login_carousel()))
+}
+
+async fn update_login_carousel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<LoginCarouselSettings>,
+) -> Result<Json<LoginCarouselSettings>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    if !is_system_admin(&actor) {
+        return Err(ApiError::forbidden(
+            "Only system administrator can update login carousel",
+        ));
+    }
+
+    // Basic validation
+    if payload.zh.is_empty() && payload.en.is_empty() {
+        return Err(ApiError::bad_request(
+            "At least one language carousel must have slides",
+        ));
+    }
+
+    let value = serde_json::to_value(&payload)?;
+    sqlx::query(
+        r#"
+        insert into site_settings (key, value, updated_at)
+        values ('login_carousel', $1, now())
+        on conflict (key) do update set value = excluded.value, updated_at = now()
+        "#,
+    )
+    .bind(value)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Json(payload))
+}
+
+async fn reset_login_carousel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    if !is_system_admin(&actor) {
+        return Err(ApiError::forbidden(
+            "Only system administrator can reset login carousel",
+        ));
+    }
+
+    sqlx::query("delete from site_settings where key = 'login_carousel'")
+        .execute(&state.pool)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "reset": true })))
 }
 
 async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<AuthUser, ApiError> {
@@ -2417,6 +2549,273 @@ fn limit(value: Option<i64>) -> i64 {
 
 fn offset(value: Option<i64>) -> i64 {
     value.unwrap_or(0).max(0)
+}
+
+async fn create_invitation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<InvitationCreate>,
+) -> Result<Json<Invitation>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    require_lab_manager(&state.pool, &actor, payload.lab_id).await?;
+
+    validate_lab_role(&payload.target_role)?;
+
+    let code = uuid::Uuid::new_v4().to_string();
+
+    let invitation = sqlx::query_as::<_, Invitation>(
+        r#"
+        insert into invitations (code, lab_id, target_role, max_uses, memo, created_by, expires_at)
+        values ($1, $2, $3, $4, $5, $6, $7)
+        returning id, code, lab_id, target_role, max_uses, used_count, memo, created_by, created_at, expires_at, status
+        "#,
+    )
+    .bind(code)
+    .bind(payload.lab_id)
+    .bind(payload.target_role)
+    .bind(payload.max_uses)
+    .bind(payload.memo)
+    .bind(actor.id)
+    .bind(payload.expires_at)
+    .fetch_one(&state.pool)
+    .await?;
+
+    Ok(Json(invitation))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListInvitationsQuery {
+    pub lab_id: Option<i64>,
+}
+
+async fn list_invitations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ListInvitationsQuery>,
+) -> Result<Json<Vec<Invitation>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+
+    let invitations = if is_system_admin(&actor) {
+        if let Some(lab_id) = query.lab_id {
+            sqlx::query_as::<_, Invitation>(
+                "select * from invitations where lab_id = $1 order by created_at desc",
+            )
+            .bind(lab_id)
+            .fetch_all(&state.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, Invitation>("select * from invitations order by created_at desc")
+                .fetch_all(&state.pool)
+                .await?
+        }
+    } else {
+        let lab_ids = sqlx::query_scalar::<_, i64>(
+            "select lab_id from lab_users where user_id = $1 and lab_role = 'lab_admin'",
+        )
+        .bind(actor.id)
+        .fetch_all(&state.pool)
+        .await?;
+
+        if lab_ids.is_empty() {
+            return Ok(Json(vec![]));
+        }
+
+        if let Some(lab_id) = query.lab_id {
+            if !lab_ids.contains(&lab_id) {
+                return Err(ApiError::forbidden("You are not a manager of this lab"));
+            }
+            sqlx::query_as::<_, Invitation>(
+                "select * from invitations where lab_id = $1 order by created_at desc",
+            )
+            .bind(lab_id)
+            .fetch_all(&state.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, Invitation>(
+                "select * from invitations where lab_id = any($1) order by created_at desc",
+            )
+            .bind(&lab_ids)
+            .fetch_all(&state.pool)
+            .await?
+        }
+    };
+
+    Ok(Json(invitations))
+}
+
+async fn delete_invitation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<StatusCode, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+
+    let invite = sqlx::query_as::<_, Invitation>("select * from invitations where id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Invitation not found"))?;
+
+    require_lab_manager(&state.pool, &actor, invite.lab_id).await?;
+
+    sqlx::query("delete from invitations where id = $1")
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_invitation_users(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Vec<InvitedUser>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+
+    let invite = sqlx::query_as::<_, Invitation>("select * from invitations where id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Invitation not found"))?;
+
+    require_lab_manager(&state.pool, &actor, invite.lab_id).await?;
+
+    let users = sqlx::query_as::<_, InvitedUser>(
+        r#"
+        select id, username, display_name, email, created_at
+        from users
+        where invitation_id = $1
+        order by created_at desc
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(users))
+}
+
+async fn get_public_invitation(
+    State(state): State<Arc<AppState>>,
+    AxumPath(code): AxumPath<String>,
+) -> Result<Json<InvitationPublicInfo>, ApiError> {
+    let invite = sqlx::query_as::<_, Invitation>(
+        "select * from invitations where code = $1 and status = 'active'",
+    )
+    .bind(&code)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Invitation link not found or disabled"))?;
+
+    if let Some(expires_at) = invite.expires_at {
+        if expires_at < chrono::Utc::now() {
+            return Err(ApiError::bad_request("Invitation link has expired"));
+        }
+    }
+
+    if let Some(max_uses) = invite.max_uses {
+        if invite.used_count >= max_uses {
+            return Err(ApiError::bad_request("Invitation link usage limit reached"));
+        }
+    }
+
+    let lab_name = sqlx::query_scalar::<_, String>("select name from labs where id = $1")
+        .bind(invite.lab_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let inviter_name =
+        sqlx::query_scalar::<_, String>("select display_name from users where id = $1")
+            .bind(invite.created_by)
+            .fetch_one(&state.pool)
+            .await?;
+
+    Ok(Json(InvitationPublicInfo {
+        code: invite.code,
+        lab_name,
+        target_role: invite.target_role,
+        inviter_name,
+    }))
+}
+
+async fn register_by_invitation(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<InvitationRegister>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let mut tx = state.pool.begin().await?;
+    let invite = sqlx::query_as::<_, Invitation>(
+        "select * from invitations where code = $1 and status = 'active' for update",
+    )
+    .bind(&payload.code)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Invitation link not found or disabled"))?;
+
+    if let Some(expires_at) = invite.expires_at {
+        if expires_at < chrono::Utc::now() {
+            return Err(ApiError::bad_request("Invitation link has expired"));
+        }
+    }
+
+    if let Some(max_uses) = invite.max_uses {
+        if invite.used_count >= max_uses {
+            return Err(ApiError::bad_request("Invitation link usage limit reached"));
+        }
+    }
+
+    validate_password_strength(&payload.password).map_err(ApiError::bad_request)?;
+
+    let password_hash = hash_password(&payload.password);
+
+    let global_role = match invite.target_role.as_str() {
+        "visitor" => "visitor",
+        _ => "lab_member",
+    };
+
+    let user_id = match sqlx::query_scalar::<_, i64>(
+        r#"
+        insert into users (username, display_name, email, role, auth_provider, password_hash, invitation_id)
+        values ($1, $2, $3, $4, 'password', $5, $6)
+        returning id
+        "#,
+    )
+    .bind(&payload.username)
+    .bind(&payload.display_name)
+    .bind(&payload.email)
+    .bind(global_role)
+    .bind(password_hash)
+    .bind(invite.id)
+    .fetch_one(&mut *tx)
+    .await {
+        Ok(id) => id,
+        Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+            return Err(ApiError::bad_request("Username or email already exists"));
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    sqlx::query(
+        r#"
+        insert into lab_users (lab_id, user_id, lab_role)
+        values ($1, $2, $3)
+        "#,
+    )
+    .bind(invite.lab_id)
+    .bind(user_id)
+    .bind(&invite.target_role)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("update invitations set used_count = used_count + 1 where id = $1")
+        .bind(invite.id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+
+    Ok(Json(
+        serde_json::json!({ "status": "success", "username": payload.username }),
+    ))
 }
 
 #[cfg(test)]

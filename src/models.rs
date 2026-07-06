@@ -370,3 +370,75 @@ pub struct UploadedFile {
     pub size: usize,
     pub url: String,
 }
+
+// Login carousel customization (stored in site_settings as JSON under key "login_carousel")
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CarouselSlide {
+    pub stat: String,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LoginCarouselSettings {
+    #[serde(default)]
+    pub zh: Vec<CarouselSlide>,
+    #[serde(default)]
+    pub en: Vec<CarouselSlide>,
+}
+
+#[derive(Debug, Serialize, Deserialize, FromRow)]
+pub struct SiteSetting {
+    pub key: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct Invitation {
+    pub id: i64,
+    pub code: String,
+    pub lab_id: i64,
+    pub target_role: String,
+    pub max_uses: Option<i32>,
+    pub used_count: i32,
+    pub memo: Option<String>,
+    pub created_by: i64,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InvitationCreate {
+    pub lab_id: i64,
+    pub target_role: String,
+    pub max_uses: Option<i32>,
+    pub memo: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InvitationRegister {
+    pub code: String,
+    pub username: String,
+    pub display_name: String,
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvitationPublicInfo {
+    pub code: String,
+    pub lab_name: String,
+    pub target_role: String,
+    pub inviter_name: String,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct InvitedUser {
+    pub id: i64,
+    pub username: String,
+    pub display_name: String,
+    pub email: String,
+    pub created_at: DateTime<Utc>,
+}

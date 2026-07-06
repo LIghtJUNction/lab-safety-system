@@ -217,4 +217,33 @@ const MIGRATIONS: &[&str] = &[
         last_used_at timestamptz
     )
     "#,
+    r#"
+    create table if not exists site_settings (
+        key text primary key,
+        value jsonb not null,
+        updated_at timestamptz not null default now()
+    )
+    "#,
+    r#"
+    create table if not exists invitations (
+        id bigserial primary key,
+        code text not null unique,
+        lab_id bigint not null references labs(id) on delete cascade,
+        target_role text not null,
+        max_uses integer,
+        used_count integer not null default 0,
+        memo text,
+        created_by bigint not null references users(id) on delete cascade,
+        created_at timestamptz not null default now(),
+        expires_at timestamptz,
+        status text not null default 'active'
+    )
+    "#,
+    r#"
+    create index if not exists idx_invitations_code on invitations(code)
+    "#,
+    r#"
+    alter table users
+    add column if not exists invitation_id bigint references invitations(id) on delete set null
+    "#,
 ];

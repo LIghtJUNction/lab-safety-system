@@ -434,6 +434,30 @@ lab-safety-system users create \
 
 实验室目前主要通过前端或直接 SQL/后端接口管理（system_admin）。
 
+## 登录页轮播设置（自定义标题/副标题）
+
+存于后端，全局生效。
+
+```http
+GET /api/v1/settings/login-carousel
+```
+（公开接口，登录页直接调用）
+
+```http
+PATCH /api/v1/settings/login-carousel
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "zh": [{ "stat": "...", "title": "...", "body": "..." }, ...],
+  "en": [...]
+}
+```
+
+- 只有 `system_admin` 能 PATCH。
+- 无记录时后端返回内置默认。
+- 前端“全局配置”页提供编辑界面。
+
 ---
 
 **总结**：前端必须围绕以下链路重构：
