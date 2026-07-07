@@ -92,7 +92,7 @@ jobs:
 
       - name: Smoke test frontend image
         if: matrix.image.name == 'lab-safety-system-frontend'
-        run: docker run --rm local/${{ matrix.image.name }}:smoke nginx -t
+        run: docker run --rm local/${{ matrix.image.name }}:smoke sh -c 'test -s /usr/share/nginx/html/index.html && test -s /etc/nginx/conf.d/default.conf'
 
       - name: Build and push
         uses: docker/build-push-action@v6
