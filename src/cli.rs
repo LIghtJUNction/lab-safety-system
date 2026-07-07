@@ -11,22 +11,29 @@ use crate::{
 };
 
 pub async fn try_run(args: Vec<String>) -> anyhow::Result<bool> {
-    if args.get(1).map(String::as_str) != Some("users") {
-        return Ok(false);
-    }
-
-    let settings = Settings::from_env()?;
-    let pool = crate::db::connect(&settings.database_url).await?;
-    crate::db::migrate(&pool).await?;
-
-    match args.get(2).map(String::as_str) {
-        Some("bootstrap-super-admin") => {
-            bootstrap_super_admin(&pool, parse_flags(&args[3..])?).await?
+    match args.get(1).map(String::as_str) {
+        Some("users") => {
+            let settings = Settings::from_env()?;
+            let pool = crate::db::connect(&settings.database_url).await?;
+            crate::db::migrate(&pool).await?;
+            match args.get(2).map(String::as_str) {
+                Some("bootstrap-super-admin") => {
+                    bootstrap_super_admin(&pool, parse_flags(&args[3..])?).await?
+                }
+                Some("create") => create_user(&pool, parse_flags(&args[3..])?).await?,
+                Some("list") => list_users(&pool, parse_flags(&args[3..])?).await?,
+                Some("set-password") => set_password(&pool, parse_flags(&args[3..])?).await?,
+                _ => print_usage(),
+            }
         }
-        Some("create") => create_user(&pool, parse_flags(&args[3..])?).await?,
-        Some("list") => list_users(&pool, parse_flags(&args[3..])?).await?,
-        Some("set-password") => set_password(&pool, parse_flags(&args[3..])?).await?,
-        _ => print_usage(),
+        Some("backup") => {
+            let settings = Settings::from_env_for_backup()?;
+            match args.get(2).map(String::as_str) {
+                Some("create") => crate::backup::create(&settings, parse_flags(&args[3..])?)?,
+                _ => print_usage(),
+            }
+        }
+        _ => return Ok(false),
     }
 
     Ok(true)
@@ -41,6 +48,7 @@ fn print_usage() {
 lab-safety-system users list --actor USER --actor-password PASS
 lab-safety-system users set-password --actor USER --actor-password PASS --username USER --password PASS
 lab-safety-system users set-password --actor USER --actor-password PASS --username USER --generate-password true
+lab-safety-system backup create [--output FILE] [--upload-dir DIR] [--force true]
 
 Roles: system_admin, lab_member, visitor. Lab-scoped roles are managed by the HTTP API: lab_admin, lab_member, visitor."
     );

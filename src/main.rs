@@ -6,23 +6,37 @@ use std::{
     time::Duration,
 };
 
+use axum::http::{HeaderValue, Method, header};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tower_http::{
-    cors::CorsLayer,
+    cors::{AllowOrigin, Any, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 
+mod backup;
 mod cli;
 mod config;
 mod db;
 mod models;
+mod route_analytics;
+mod route_auth;
+mod route_auth_support;
+mod route_documents;
+mod route_hazards;
+mod route_invitations;
+mod route_operations;
+mod route_permissions;
+mod route_settings;
+mod route_support;
+mod route_uploads;
+mod route_users_labs;
 mod routes;
 mod security;
 
 use config::Settings;
-use routes::AppState;
+use route_support::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -52,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     });
     let mut app = routes::router(state)
         .nest_service("/uploads", ServeDir::new(uploads))
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer(&settings)?)
         .layer(TraceLayer::new_for_http());
 
     if let Some(static_dir) = settings.static_dir.clone() {
@@ -73,6 +87,30 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
     Ok(())
+}
+
+fn cors_layer(settings: &Settings) -> anyhow::Result<CorsLayer> {
+    if settings.app_env != "production" {
+        return Ok(CorsLayer::permissive());
+    }
+
+    let mut origins = Vec::with_capacity(settings.cors_allowed_origins.len() + 1);
+    origins.push(settings.webauthn_origin.parse::<HeaderValue>()?);
+    for origin in &settings.cors_allowed_origins {
+        origins.push(origin.parse::<HeaderValue>()?);
+    }
+
+    Ok(CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .expose_headers(Any))
 }
 
 fn healthcheck() -> anyhow::Result<()> {

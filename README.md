@@ -117,6 +117,7 @@ POSTGRES_PORT=5432
 SECRET_KEY=必须替换为随机长密钥
 TOKEN_TTL_SECONDS=3600
 UPLOAD_DIR=/app/uploads
+STATIC_DIR=/app/public
 SSO_ENABLED=false
 OAUTH_ENABLED=false
 SSO_LOGIN_URL=
@@ -124,7 +125,11 @@ OAUTH_LOGIN_URL=
 FEDERATED_LOGIN_SECRET=
 WEBAUTHN_RP_ID=你的域名
 WEBAUTHN_ORIGIN=https://你的域名
+CORS_ALLOWED_ORIGINS=
 ```
+
+`APP_ENV=production` 时，服务会拒绝默认/占位 `SECRET_KEY`、占位数据库密码，以及启用 SSO/OAuth 但未设置安全 `FEDERATED_LOGIN_SECRET` 的配置。
+生产环境 CORS 默认只允许 `WEBAUTHN_ORIGIN`；前后端分离或多域名入口可用 `CORS_ALLOWED_ORIGINS=https://admin.example.com,https://lab.example.com` 追加允许来源。
 
 ## SSO / OAuth
 
@@ -214,7 +219,23 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-前端冒烟验证见 [`frontend/tests/e2e-smoke.mjs`](./frontend/tests/e2e-smoke.mjs)。
+前端实机冒烟验证见 [`frontend/tests/e2e-smoke.mjs`](./frontend/tests/e2e-smoke.mjs)。在本机服务
+和测试管理员账号准备好后运行：
+
+```bash
+cd frontend
+E2E_BASE_URL=http://localhost:8080 \
+E2E_ADMIN_USER=cli_super \
+E2E_ADMIN_PASSWORD='替换为实际管理员密码' \
+E2E_FEDERATED_SECRET='与 FEDERATED_LOGIN_SECRET 一致' \
+npm run e2e:smoke
+```
+
+该脚本覆盖账号密码登录、Passkey 绑定与登录、SSO/OAuth 回调、实验室/用户/邀请注册、
+法规/事故/培训/设备/预约/报修、问题照片上传、真实隐患上报、责任认领和整改照片上传。
+运行时会保存登录页、系统总览、法规、事故、培训、设备预约、报修、邀请注册和隐患闭环等页面截图。
+默认截图目录为 `frontend/test-artifacts/screenshots/<run-id>/`，可用 `E2E_SCREENSHOT_DIR`
+指定输出目录。
 
 ## 镜像发布
 
@@ -245,6 +266,24 @@ Compose 会创建两个持久化卷：
 - `backend-uploads`：法规附件、事故附件、隐患照片和整改照片
 
 执行 `docker compose down` 不会删除数据卷。只有执行 `docker compose down -v` 才会删除数据库和上传文件。
+
+生产环境应定期执行内置备份命令。备份包会包含 `database.sql`、`uploads/`
+附件快照和 `metadata.json`：
+
+```bash
+docker compose -f docker-compose.integrated.yml exec app \
+  lab-safety-system backup create
+```
+
+分离部署时把服务名换成 `backend`。AUR / systemd 部署可以使用：
+
+```bash
+sudo -u lab-safety-system lab-safety-system backup create
+```
+
+默认备份文件写入上传目录的 `backups/` 子目录，也可以用
+`--output /var/backups/lab-safety-system-$(date +%F).tar.gz` 指定输出路径。
+备份命令默认拒绝覆盖已有归档；确需覆盖时显式追加 `--force true`。
 
 ## 开源许可和声明
 

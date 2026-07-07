@@ -30,6 +30,7 @@ services:
       FEDERATED_LOGIN_SECRET: ${FEDERATED_LOGIN_SECRET:-}
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
       WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost:${FRONTEND_PORT:-8081}}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     volumes:
       - backend-uploads:/app/uploads
     ports:

@@ -346,12 +346,41 @@ Compose 会创建两个卷：
 - `postgres-data`：数据库数据。
 - `backend-uploads`：法规附件、事故附件、隐患照片和整改照片。
 
-建议定期备份 PostgreSQL 和上传卷。最低限度可以先备份数据库：
+建议定期备份 PostgreSQL 和上传卷。应用内置备份命令会生成一个 `tar.gz`
+归档，包含：
+
+- `database.sql`：PostgreSQL 逻辑备份。
+- `uploads/`：法规附件、事故附件、隐患照片和整改照片。
+- `metadata.json`：备份创建时间和应用版本。
+
+整合 Docker 部署：
 
 ```bash
-docker compose -f docker-compose.integrated.yml exec postgres \
-  pg_dump -U lab_safety lab_safety > lab_safety_backup.sql
+docker compose -f docker-compose.integrated.yml exec app \
+  lab-safety-system backup create
 ```
+
+分离 Docker 部署：
+
+```bash
+docker compose exec backend lab-safety-system backup create
+```
+
+AUR / systemd 部署：
+
+```bash
+sudo -u lab-safety-system lab-safety-system backup create
+```
+
+默认备份文件会写入上传目录的 `backups/` 子目录。也可以指定输出路径：
+
+```bash
+lab-safety-system backup create --output /var/backups/lab-safety-system-$(date +%F).tar.gz
+```
+
+备份命令默认拒绝覆盖已有归档；确需覆盖时显式追加 `--force true`。
+
+备份归档包含敏感数据，生产环境应放入受控目录并纳入服务器级快照或异地备份。
 
 ## 镜像地址
 

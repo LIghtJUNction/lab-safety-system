@@ -33,7 +33,7 @@ RUN groupadd --system app \
     && mkdir -p /app/uploads /app/public \
     && chown -R app:app /app/uploads /app/public \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=backend-build /app/target/release/lab-safety-system /usr/local/bin/lab-safety-system

@@ -20,8 +20,8 @@ pub struct UserCreate {
     pub username: String,
     pub display_name: String,
     pub email: String,
-    pub role: Option<String>,
-    pub auth_provider: Option<String>,
+    pub role: String,
+    pub auth_provider: String,
     pub department: Option<String>,
     pub password: Option<String>,
 }
@@ -57,7 +57,7 @@ pub struct LabCreate {
     pub department: Option<String>,
     pub manager_user_id: Option<i64>,
     pub contact: Option<String>,
-    pub status: Option<String>,
+    pub status: String,
     pub description: Option<String>,
 }
 
@@ -197,9 +197,9 @@ pub struct Training {
 pub struct TrainingCreate {
     pub title: String,
     pub target_role: String,
-    pub status: Option<String>,
+    pub status: String,
     pub starts_on: Option<NaiveDate>,
-    pub exam_required_score: Option<i32>,
+    pub exam_required_score: i32,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -217,7 +217,6 @@ pub struct ExamResultCreate {
     pub training_id: i64,
     pub user_id: i64,
     pub score: i32,
-    pub status: String,
 }
 
 #[derive(Debug, Serialize, FromRow)]
@@ -238,7 +237,7 @@ pub struct EquipmentCreate {
     pub name: String,
     pub lab_id: Option<i64>,
     pub lab_name: Option<String>,
-    pub status: Option<String>,
+    pub status: String,
     pub owner: Option<String>,
 }
 
@@ -277,7 +276,7 @@ pub struct RepairTicketCreate {
     pub equipment_id: i64,
     pub reported_by: i64,
     pub description: String,
-    pub status: Option<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Deserialize)]

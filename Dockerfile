@@ -22,7 +22,7 @@ RUN groupadd --system app && useradd --system --gid app --create-home app \
     && mkdir -p /app/uploads \
     && chown -R app:app /app/uploads \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/target/release/lab-safety-system /usr/local/bin/lab-safety-system
@@ -30,6 +30,7 @@ COPY --from=build /app/target/release/lab-safety-system /usr/local/bin/lab-safet
 ENV APP_ENV=production
 ENV APP_HOST=0.0.0.0
 ENV APP_PORT=8080
+ENV UPLOAD_DIR=/app/uploads
 
 EXPOSE 8080
 
