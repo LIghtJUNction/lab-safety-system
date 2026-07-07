@@ -20,7 +20,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 LABEL org.opencontainers.image.title="lab-safety-system"
 LABEL org.opencontainers.image.description="Integrated frontend and Rust backend for Laboratory Safety Management Information System"
