@@ -5,8 +5,8 @@ services:
       APP_ENV: ${APP_ENV:-production}
       APP_HOST: ${APP_HOST:-0.0.0.0}
       APP_PORT: 8080
-      DATABASE_URL: postgresql://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-lab_safety}
-      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:-lab_safety}@postgres:5432/${POSTGRES_DB:-lab_safety}
+      SECRET_KEY: ${SECRET_KEY:-ThisIsADefaultSecretKeyForQuickDeployment1234567890}
       TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-3600}
       STATIC_DIR: /app/public
       UPLOAD_DIR: /app/uploads
@@ -38,7 +38,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-lab_safety}
       POSTGRES_USER: ${POSTGRES_USER:-lab_safety}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lab_safety}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
