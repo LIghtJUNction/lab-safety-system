@@ -53,11 +53,16 @@ pub struct Lab {
 pub struct LabCreate {
     pub code: String,
     pub name: String,
+    #[serde(default)]
     pub location: Option<String>,
+    #[serde(default)]
     pub department: Option<String>,
+    #[serde(default)]
     pub manager_user_id: Option<i64>,
+    #[serde(default)]
     pub contact: Option<String>,
     pub status: String,
+    #[serde(default)]
     pub description: Option<String>,
 }
 
