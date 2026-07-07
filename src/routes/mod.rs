@@ -32,6 +32,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(operations::operations_routes())
         .merge(hazards::hazards_routes())
         .merge(analytics::analytics_routes())
+        // MCP routes are always mounted at bare /mcp and /mcp/call (single large "lab_safety" tool).
+        // The feature enable/disable is a *runtime* concern (McpRuntime in AppState, driven by MCP_ENABLED env + POST /mcp).
+        // Only the dispatch (/mcp/call) is gated; config endpoints remain usable for inspection and re-enabling.
+        // This is intentional: router-level static conditional would not support dynamic POST toggle.
         .merge(mcp::mcp_routes())
         .with_state(state)
 }

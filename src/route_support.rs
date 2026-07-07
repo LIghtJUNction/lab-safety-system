@@ -16,12 +16,18 @@ use webauthn_rs::prelude::{
 use crate::config::Settings;
 use serde_json::Value;
 
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct McpRuntime {
+    pub enabled: bool,
+    pub config: Option<Value>,
+}
+
 pub struct AppState {
     pub pool: PgPool,
     pub settings: Settings,
     pub passkey_registrations: Mutex<PasskeyRegistrationCache>,
     pub passkey_authentications: Mutex<PasskeyAuthenticationCache>,
-    pub mcp_config: Mutex<Option<Value>>,
+    pub mcp_runtime: Mutex<McpRuntime>,
 }
 
 pub(crate) type PasskeyRegistrationCache = HashMap<String, (i64, PasskeyRegistration)>;

@@ -63,7 +63,10 @@ async fn main() -> anyhow::Result<()> {
         settings: settings.clone(),
         passkey_registrations: Mutex::new(HashMap::new()),
         passkey_authentications: Mutex::new(HashMap::new()),
-        mcp_config: Mutex::new(None),
+        mcp_runtime: Mutex::new(crate::route_support::McpRuntime {
+            enabled: settings.mcp_enabled,
+            config: None,
+        }),
     });
     let mut app = routes::router(state)
         .nest_service("/uploads", ServeDir::new(uploads))
