@@ -1,4 +1,4 @@
-FROM rust:1.96-slim AS build
+FROM rust:1.96-trixie AS build
 
 LABEL org.opencontainers.image.title="lab-safety-system"
 LABEL org.opencontainers.image.description="Rust backend for the Laboratory Safety Management Information System"

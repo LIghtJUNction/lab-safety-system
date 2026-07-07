@@ -40,6 +40,11 @@ use route_support::AppState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if std::env::args().any(|arg| arg == "--version") {
+        println!("lab-safety-system {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     if cli::try_run(std::env::args().collect()).await? {
         return Ok(());
     }

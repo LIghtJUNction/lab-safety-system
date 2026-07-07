@@ -96,7 +96,12 @@ Arch Linux 用户也可以通过 AUR 安装：
 
 ```bash
 paru -S lab-safety-system-git
+sudo lab-safety-system-setup
 ```
+
+`lab-safety-system-setup` 会生成本机生产环境密钥，创建 PostgreSQL 用户和数据库，
+写入 `/etc/lab-safety-system/lab-safety-system.env`，启用 systemd 服务，并提示首次
+创建系统管理员的命令。
 
 ## 环境变量
 

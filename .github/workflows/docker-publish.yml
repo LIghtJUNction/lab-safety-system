@@ -73,6 +73,26 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
 
+      - name: Build local smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          tags: local/${{ matrix.image.name }}:smoke
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ matrix.image.name }}
+
+      - name: Smoke test backend image
+        if: matrix.image.name == 'lab-safety-system-backend' || matrix.image.name == 'lab-safety-system'
+        run: docker run --rm local/${{ matrix.image.name }}:smoke /usr/local/bin/lab-safety-system --version
+
+      - name: Smoke test frontend image
+        if: matrix.image.name == 'lab-safety-system-frontend'
+        run: docker run --rm local/${{ matrix.image.name }}:smoke nginx -t
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
