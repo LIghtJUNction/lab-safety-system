@@ -162,6 +162,11 @@ async fn call_mcp_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::collections::HashMap;
+    use tokio::sync::Mutex as TokioMutex;
+    use tower::ServiceExt;
 
     #[test]
     fn dispatcher_rejects_empty_action() {
@@ -179,5 +184,49 @@ mod tests {
         let grouping = "action";
         assert_eq!(tool, "lab_safety");
         assert_eq!(grouping, "action");
+    }
+
+    // Drives the real get_mcp_config handler (shipped code) using test router + minimal state (pool not hit by this handler)
+    #[tokio::test]
+    async fn test_get_mcp_config_endpoint_drives_real_handler() {
+        // Minimal state: use a lazy pool (connect not triggered for config endpoint)
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid:5432/test").expect("lazy pool");
+        let settings = crate::config::Settings {
+            app_env: "test".into(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url: "postgres://test".into(),
+            secret_key: "test".into(),
+            token_ttl_seconds: 3600,
+            upload_dir: "/tmp".into(),
+            static_dir: None,
+            sso_enabled: false,
+            oauth_enabled: false,
+            sso_login_url: None,
+            oauth_login_url: None,
+            federated_login_secret: None,
+            webauthn_rp_id: "localhost".into(),
+            webauthn_origin: "http://localhost".into(),
+            cors_allowed_origins: vec![],
+            mcp_enabled: true,
+            mcp_config: Some("{\"test\":true}".into()),
+        };
+        let state = Arc::new(AppState {
+            pool,
+            settings,
+            passkey_registrations: TokioMutex::new(HashMap::new()),
+            passkey_authentications: TokioMutex::new(HashMap::new()),
+            mcp_config: TokioMutex::new(None),
+        });
+        let app = mcp_routes().with_state(state);
+
+        let req = Request::builder().uri("/mcp").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["tool_name"], "lab_safety");
+        assert_eq!(json["enabled"], true);
     }
 }
