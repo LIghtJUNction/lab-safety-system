@@ -70,6 +70,7 @@ async fn call_mcp_tool(
     Json(payload): Json<McpToolCall>,
 ) -> Result<Json<Value>, ApiError> {
     // support both {tool: "lab_safety", arguments: {action: "xx", ...}} and flat
+    let _tool = payload.tool.clone().unwrap_or_else(|| "lab_safety".to_string()); // use the big tool name
     let args = payload.arguments.unwrap_or(payload.extra);
     let action = payload
         .action
@@ -228,5 +229,37 @@ mod tests {
         assert_eq!(json["status"], "ok");
         assert_eq!(json["tool_name"], "lab_safety");
         assert_eq!(json["enabled"], true);
+    }
+
+    // Drives the real call_mcp_tool handler (shipped code) via router POST for error path (no DB hit on early return)
+    #[tokio::test]
+    async fn test_call_mcp_tool_bad_action_drives_real_handler() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid:5432/test").expect("lazy");
+        let settings = crate::config::Settings {
+            app_env: "test".into(), bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url: "postgres://test".into(), secret_key: "test".into(),
+            token_ttl_seconds: 3600, upload_dir: "/tmp".into(), static_dir: None,
+            sso_enabled: false, oauth_enabled: false, sso_login_url: None, oauth_login_url: None,
+            federated_login_secret: None, webauthn_rp_id: "l".into(), webauthn_origin: "http://l".into(),
+            cors_allowed_origins: vec![], mcp_enabled: true, mcp_config: None,
+        };
+        let state = Arc::new(AppState {
+            pool, settings,
+            passkey_registrations: TokioMutex::new(HashMap::new()),
+            passkey_authentications: TokioMutex::new(HashMap::new()),
+            mcp_config: TokioMutex::new(None),
+        });
+        let app = mcp_routes().with_state(state);
+
+        let req = Request::builder()
+            .uri("/mcp/call")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"action":""}"#)).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 400);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["detail"].as_str().unwrap_or("").contains("action"));
     }
 }
