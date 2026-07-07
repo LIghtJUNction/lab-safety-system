@@ -37,8 +37,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Checkout frontend submodule
+        run: git submodule update --init --depth=1 frontend
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
