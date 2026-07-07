@@ -17,6 +17,8 @@ pub struct Settings {
     pub webauthn_rp_id: String,
     pub webauthn_origin: String,
     pub cors_allowed_origins: Vec<String>,
+    pub mcp_enabled: bool,
+    pub mcp_config: Option<String>,
 }
 
 impl Settings {
@@ -71,6 +73,8 @@ impl Settings {
             webauthn_origin: env::var("WEBAUTHN_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost:5174".to_string()),
             cors_allowed_origins: parse_csv_env("CORS_ALLOWED_ORIGINS"),
+            mcp_enabled: env::var("MCP_ENABLED").is_ok_and(|v| v == "true"),
+            mcp_config: env::var("MCP_CONFIG").ok(),
         })
     }
 }

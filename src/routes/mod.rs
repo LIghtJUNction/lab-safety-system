@@ -16,6 +16,7 @@ mod auth;
 mod documents;
 mod hazards;
 mod invitations;
+mod mcp;
 mod operations;
 mod settings;
 mod users_labs;
@@ -31,6 +32,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(operations::operations_routes())
         .merge(hazards::hazards_routes())
         .merge(analytics::analytics_routes())
+        .merge(mcp::mcp_routes())
         .with_state(state)
 }
 

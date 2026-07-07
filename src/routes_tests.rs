@@ -73,6 +73,8 @@ async fn test_app() -> anyhow::Result<Option<TestApp>> {
         webauthn_rp_id: "localhost".to_string(),
         webauthn_origin: "http://localhost:5174".to_string(),
         cors_allowed_origins: vec![],
+        mcp_enabled: false,
+        mcp_config: None,
     };
 
     let admin_password_hash = hash_password("AdminStrong123!");
@@ -103,6 +105,7 @@ async fn test_app() -> anyhow::Result<Option<TestApp>> {
         settings,
         passkey_registrations: Mutex::new(HashMap::new()),
         passkey_authentications: Mutex::new(HashMap::new()),
+        mcp_config: Mutex::new(None),
     });
     let app = router(state.clone());
     let admin_token = crate::security::create_access_token(
