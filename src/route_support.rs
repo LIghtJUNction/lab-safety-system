@@ -238,8 +238,11 @@ pub(crate) fn validate_lab_status(status: &str) -> Result<(), ApiError> {
 /// `open` → `claimed` → `remediation_submitted` → `closed`.
 /// Legacy DB rows may still store `reported`; treat it as an alias of `open` for PATCH.
 pub(crate) const HAZARD_STATUS_OPEN: &str = "open";
+#[allow(dead_code)] // documented lifecycle set; used in unit tests + docs
 pub(crate) const HAZARD_STATUS_CLAIMED: &str = "claimed";
+#[allow(dead_code)]
 pub(crate) const HAZARD_STATUS_REMEDIATION_SUBMITTED: &str = "remediation_submitted";
+#[allow(dead_code)]
 pub(crate) const HAZARD_STATUS_CLOSED: &str = "closed";
 /// Pre-multi-lab default; accepted as alias of `open` only.
 pub(crate) const HAZARD_STATUS_REPORTED_ALIAS: &str = "reported";
@@ -264,38 +267,6 @@ pub(crate) fn validate_hazard_status(status: &str) -> Result<(), ApiError> {
         Err(ApiError::bad_request(
             "Hazard status must be open, claimed, remediation_submitted, or closed (reported is accepted as open)",
         ))
-    }
-}
-
-#[cfg(test)]
-mod hazard_status_tests {
-    use super::*;
-
-    #[test]
-    fn accepts_canonical_hazard_statuses() {
-        for status in [
-            HAZARD_STATUS_OPEN,
-            HAZARD_STATUS_CLAIMED,
-            HAZARD_STATUS_REMEDIATION_SUBMITTED,
-            HAZARD_STATUS_CLOSED,
-        ] {
-            assert!(validate_hazard_status(status).is_ok(), "{status}");
-        }
-    }
-
-    #[test]
-    fn accepts_reported_as_open_alias() {
-        assert!(validate_hazard_status(HAZARD_STATUS_REPORTED_ALIAS).is_ok());
-        assert_eq!(
-            normalize_hazard_status(HAZARD_STATUS_REPORTED_ALIAS),
-            HAZARD_STATUS_OPEN
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_hazard_status() {
-        assert!(validate_hazard_status("nonsense").is_err());
-        assert!(validate_hazard_status("in_progress").is_err());
     }
 }
 
@@ -353,4 +324,36 @@ pub(crate) fn limit(value: Option<i64>) -> i64 {
 
 pub(crate) fn offset(value: Option<i64>) -> i64 {
     value.unwrap_or(0).max(0)
+}
+
+#[cfg(test)]
+mod hazard_status_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_canonical_hazard_statuses() {
+        for status in [
+            HAZARD_STATUS_OPEN,
+            HAZARD_STATUS_CLAIMED,
+            HAZARD_STATUS_REMEDIATION_SUBMITTED,
+            HAZARD_STATUS_CLOSED,
+        ] {
+            assert!(validate_hazard_status(status).is_ok(), "{status}");
+        }
+    }
+
+    #[test]
+    fn accepts_reported_as_open_alias() {
+        assert!(validate_hazard_status(HAZARD_STATUS_REPORTED_ALIAS).is_ok());
+        assert_eq!(
+            normalize_hazard_status(HAZARD_STATUS_REPORTED_ALIAS),
+            HAZARD_STATUS_OPEN
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_hazard_status() {
+        assert!(validate_hazard_status("nonsense").is_err());
+        assert!(validate_hazard_status("in_progress").is_err());
+    }
 }

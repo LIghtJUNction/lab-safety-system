@@ -18,8 +18,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        # Do not recursive-init AUR submodule (private/unavailable to GHA).
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -42,8 +41,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      # Only frontend is required for CI/build. AUR packaging submodule is not.
+      - name: Checkout frontend submodule
+        run: git submodule update --init --depth=1 frontend
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

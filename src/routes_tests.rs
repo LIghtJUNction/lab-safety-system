@@ -244,8 +244,15 @@ async fn mcp_big_tool_dispatcher_drives_real_success_paths_for_multiple_actions(
             "lab_name": "mcp-test-lab",
             "description": "driven by test, not remote curl"
         }),
-    ).await.expect("create call");
-    assert_eq!(status, StatusCode::OK, "create_hazard should succeed: {:?}", body);
+    )
+    .await
+    .expect("create call");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create_hazard should succeed: {:?}",
+        body
+    );
     let created_id = body["result"]["id"].as_i64().expect("id returned");
     assert!(created_id > 0);
     assert_eq!(body["action"], "create_hazard");
@@ -257,13 +264,24 @@ async fn mcp_big_tool_dispatcher_drives_real_success_paths_for_multiple_actions(
         "/mcp/call",
         None,
         serde_json::json!({"action": "list_hazards"}),
-    ).await.expect("list call");
+    )
+    .await
+    .expect("list call");
     assert_eq!(status2, StatusCode::OK);
     let hazards = body2["result"].as_array().expect("result array");
-    assert!(!hazards.is_empty(), "list_hazards should return items after create or seeded");
+    assert!(
+        !hazards.is_empty(),
+        "list_hazards should return items after create or seeded"
+    );
     // verify our created is findable
-    let found = hazards.iter().any(|h| h["title"] == "honest-mcp-hazard-test" || h.get("id").and_then(|x|x.as_i64()) == Some(created_id));
-    assert!(found || hazards.len() >= 1, "created hazard or others should appear");
+    let found = hazards.iter().any(|h| {
+        h["title"] == "honest-mcp-hazard-test"
+            || h.get("id").and_then(|x| x.as_i64()) == Some(created_id)
+    });
+    assert!(
+        found || !hazards.is_empty(),
+        "created hazard or others should appear"
+    );
 
     // 3. list_labs (parameterized path exercised; may be empty but no error)
     let (status3, body3) = json_request(
@@ -272,19 +290,29 @@ async fn mcp_big_tool_dispatcher_drives_real_success_paths_for_multiple_actions(
         "/mcp/call",
         None,
         serde_json::json!({"action": "list_labs"}),
-    ).await.expect("labs");
+    )
+    .await
+    .expect("labs");
     assert_eq!(status3, StatusCode::OK);
     assert!(body3.get("result").is_some() && body3["action"] == "list_labs");
 
     // 4. other grouped actions (reg/equip/incident) - exercise match arms, expect no crash
-    for act in ["list_regulations", "list_documents", "list_equipment", "list_operations", "list_incidents"] {
+    for act in [
+        "list_regulations",
+        "list_documents",
+        "list_equipment",
+        "list_operations",
+        "list_incidents",
+    ] {
         let (s, b) = json_request(
             &test.app,
             Method::POST,
             "/mcp/call",
             None,
             serde_json::json!({"action": act}),
-        ).await.expect(act);
+        )
+        .await
+        .expect(act);
         assert_eq!(s, StatusCode::OK, "action {} failed: {:?}", act, b);
         assert_eq!(b["action"], act);
     }
@@ -296,7 +324,9 @@ async fn mcp_big_tool_dispatcher_drives_real_success_paths_for_multiple_actions(
         "/mcp/call",
         None,
         serde_json::json!({"tool": "lab_safety", "arguments": {"action": "list_hazards"}}),
-    ).await.expect("mcp-style");
+    )
+    .await
+    .expect("mcp-style");
     assert_eq!(s5, StatusCode::OK);
     assert!(b5["result"].is_array());
 }
@@ -326,7 +356,9 @@ async fn dispatch_lab_safety_action_direct_tests() {
         "create_hazard",
         &serde_json::json!({"title": "direct-dispatch-hazard", "lab_name": "direct-lab", "description": "via extracted fn"}),
     ).await.expect("create dispatch");
-    let id = create_res["result"]["id"].as_i64().expect("id from dispatch");
+    let id = create_res["result"]["id"]
+        .as_i64()
+        .expect("id from dispatch");
     assert!(id > 0);
     assert_eq!(create_res["action"], "create_hazard");
     eprintln!("VERIF_DISPATCH create_hazard id={} ", id);
@@ -335,20 +367,42 @@ async fn dispatch_lab_safety_action_direct_tests() {
         &test.pool,
         "list_hazards",
         &serde_json::json!({}),
-    ).await.expect("list dispatch");
+    )
+    .await
+    .expect("list dispatch");
     let items = list_res["result"].as_array().expect("result array");
     assert!(!items.is_empty());
-    assert!(items.iter().any(|h| h.get("id").and_then(|v| v.as_i64()) == Some(id) || h["title"] == "direct-dispatch-hazard"));
-    eprintln!("VERIF_DISPATCH list_hazards count={} has_data=true", items.len());
+    assert!(
+        items
+            .iter()
+            .any(|h| h.get("id").and_then(|v| v.as_i64()) == Some(id)
+                || h["title"] == "direct-dispatch-hazard")
+    );
+    eprintln!(
+        "VERIF_DISPATCH list_hazards count={} has_data=true",
+        items.len()
+    );
 
     // other list actions now with seeded data
-    for act in ["list_labs", "list_regulations", "list_documents", "list_equipment", "list_operations", "list_incidents"] {
-        let r = crate::routes::mcp::dispatch_lab_safety_action(&test.pool, act, &serde_json::json!({}))
-            .await
-            .expect(&format!("dispatch {}", act));
+    for act in [
+        "list_labs",
+        "list_regulations",
+        "list_documents",
+        "list_equipment",
+        "list_operations",
+        "list_incidents",
+    ] {
+        let r =
+            crate::routes::mcp::dispatch_lab_safety_action(&test.pool, act, &serde_json::json!({}))
+                .await
+                .unwrap_or_else(|e| panic!("dispatch {act}: {e:?}"));
         assert_eq!(r["action"], act);
         let res = r.get("result").expect("has result");
-        eprintln!("VERIF_DISPATCH {} result_len={}", act, res.as_array().map(|a|a.len()).unwrap_or(0));
+        eprintln!(
+            "VERIF_DISPATCH {} result_len={}",
+            act,
+            res.as_array().map(|a| a.len()).unwrap_or(0)
+        );
         // for ones with seed, assert >0 where applicable
     }
 }
