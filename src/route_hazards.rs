@@ -10,8 +10,9 @@ use crate::{
     models::*,
     route_permissions::*,
     route_support::{
-        ApiError, AppState, ListQuery, ROLE_LAB_ADMIN, ROLE_LAB_MEMBER, limit, offset,
-        validate_hazard_status, validate_optional_upload_url, validate_upload_url, wildcard,
+        ApiError, AppState, HAZARD_STATUS_OPEN, ListQuery, ROLE_LAB_ADMIN, ROLE_LAB_MEMBER, limit,
+        normalize_hazard_status, offset, validate_hazard_status, validate_optional_upload_url,
+        validate_upload_url, wildcard,
     },
     route_users_labs::resolve_lab_reference,
     routes::require_user,
@@ -26,26 +27,27 @@ pub(crate) async fn create_hazard(
     ensure_self_or_admin(&actor, payload.reported_by)?;
     let (lab_id, lab_name) =
         resolve_lab_reference(&state.pool, payload.lab_id, payload.lab_name).await?;
-    if let Some(lab_id) = lab_id {
-        require_lab_role(
-            &state.pool,
-            &actor,
-            lab_id,
-            &[ROLE_LAB_ADMIN, ROLE_LAB_MEMBER],
-        )
-        .await?;
-    } else if !is_system_admin(&actor) {
+    // Multi-lab model: hazards must bind to a real lab for all roles, including system_admin.
+    let Some(lab_id) = lab_id else {
         return Err(ApiError::bad_request("lab_id is required"));
-    }
+    };
+    require_lab_role(
+        &state.pool,
+        &actor,
+        lab_id,
+        &[ROLE_LAB_ADMIN, ROLE_LAB_MEMBER],
+    )
+    .await?;
     validate_optional_upload_url(
         payload.issue_photo_url.as_deref(),
         "/uploads/hazards/issue/",
         "issue_photo_url",
     )?;
+    // New hazards always start as canonical `open` (not legacy `reported`).
     Ok(Json(sqlx::query_as::<_, SafetyHazard>(
         r#"
-        insert into safety_hazards (title, lab_id, lab_name, category, description, reported_by, issue_photo_url)
-        values ($1, $2, $3, $4, $5, $6, $7)
+        insert into safety_hazards (title, lab_id, lab_name, category, description, reported_by, issue_photo_url, status)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
         returning id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
@@ -56,6 +58,7 @@ pub(crate) async fn create_hazard(
     .bind(payload.description)
     .bind(payload.reported_by)
     .bind(payload.issue_photo_url)
+    .bind(HAZARD_STATUS_OPEN)
     .fetch_one(&state.pool)
     .await?))
 }
@@ -207,6 +210,8 @@ pub(crate) async fn update_hazard_status(
         require_admin(&actor)?;
     }
     validate_hazard_status(&payload.status)?;
+    // Persist canonical form so legacy `reported` becomes `open`.
+    let status = normalize_hazard_status(&payload.status).to_string();
     let row = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards set status = $1, updated_at = now()
@@ -214,7 +219,7 @@ pub(crate) async fn update_hazard_status(
         returning id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
-    .bind(payload.status)
+    .bind(status)
     .bind(id)
     .fetch_optional(&state.pool)
     .await?;

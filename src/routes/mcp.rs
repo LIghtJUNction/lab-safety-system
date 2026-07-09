@@ -91,7 +91,7 @@ pub(crate) async fn dispatch_lab_safety_action(
 
             let id: i64 = sqlx::query_scalar(
                 r#"insert into safety_hazards (title, lab_name, category, description, reported_by, status)
-                   values ($1, $2, 'other', $3, $4, 'reported') returning id"#
+                   values ($1, $2, 'other', $3, $4, 'open') returning id"#
             )
             .bind(&title)
             .bind(&lab_name)
@@ -100,7 +100,7 @@ pub(crate) async fn dispatch_lab_safety_action(
             .fetch_one(pool)
             .await
             .map_err(|e| ApiError::bad_request(format!("insert err: {}", e)))?;
-            Ok(json!({ "action": action, "result": { "id": id, "title": title, "status": "reported", "lab_name": lab_name } }))
+            Ok(json!({ "action": action, "result": { "id": id, "title": title, "status": "open", "lab_name": lab_name } }))
         }
         "list_regulations" | "list_documents" => {
             let rows = sqlx::query("select id, title, regulation_type from regulations limit 5")

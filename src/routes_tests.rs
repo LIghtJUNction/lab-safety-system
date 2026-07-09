@@ -152,10 +152,16 @@ async fn request(
     let response = app.clone().oneshot(builder.body(body)?).await?;
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+    // Axum Json rejections may be plain text (422); API errors are JSON `{detail}`.
     let value = if bytes.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&bytes)?
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(v) => v,
+            Err(_) => serde_json::json!({
+                "detail": String::from_utf8_lossy(&bytes)
+            }),
+        }
     };
     Ok((status, value))
 }

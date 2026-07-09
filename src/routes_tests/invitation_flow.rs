@@ -62,11 +62,14 @@ async fn invitation_registration_enforces_limits_and_lab_role() -> anyhow::Resul
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
+    let invite_code = invitation["code"]
+        .as_str()
+        .expect("invitation code string");
 
     let (status, public_info) = request(
         &ctx.app,
         Method::GET,
-        &format!("/api/v1/invitations/public/{}", invitation["code"]),
+        &format!("/api/v1/invitations/public/{invite_code}"),
         None,
         Body::empty(),
         None,
@@ -83,7 +86,7 @@ async fn invitation_registration_enforces_limits_and_lab_role() -> anyhow::Resul
         "/api/v1/invitations/register",
         None,
         serde_json::json!({
-            "code": invitation["code"],
+            "code": invite_code,
             "username": invited_username,
             "display_name": "Invited Member",
             "email": format!("invited-{}@example.com", ctx.schema),
@@ -116,7 +119,7 @@ async fn invitation_registration_enforces_limits_and_lab_role() -> anyhow::Resul
         "/api/v1/invitations/register",
         None,
         serde_json::json!({
-            "code": invitation["code"],
+            "code": invite_code,
             "username": format!("second_{}", ctx.schema),
             "display_name": "Second Member",
             "email": format!("second-{}@example.com", ctx.schema),

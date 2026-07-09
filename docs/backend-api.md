@@ -293,6 +293,17 @@ GET `/api/v1/labs/{id}/users` 返回：
 
 列表查询推荐始终带 `?lab_id=当前选中实验室ID`。
 
+### 隐患状态机（前后端统一）
+
+| 状态 | 含义 | 如何进入 |
+|------|------|----------|
+| `open` | 已上报、待认领 | `POST /hazards` 创建默认；历史 `reported` 已迁移/别名为 `open` |
+| `claimed` | 已认领责任人 | `POST /hazards/{id}/claim` |
+| `remediation_submitted` | 已提交整改 | `POST /hazards/{id}/remediation` |
+| `closed` | 已闭环 | `PATCH /hazards/{id}/status`（lab_admin / system_admin） |
+
+`PATCH .../status` 仅允许上述集合；传入遗留值 `reported` 时会规范化为 `open`。
+
 ## 事故案例、设备、预约、维修
 
 这些资源也支持 `lab_id` 过滤与权限收口：

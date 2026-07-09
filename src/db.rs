@@ -189,7 +189,7 @@ const MIGRATIONS: &[&str] = &[
         lab_name text not null,
         category text not null,
         description text not null,
-        status text not null default 'reported',
+        status text not null default 'open',
         reported_by bigint not null references users(id) on delete cascade,
         responsible_user_id bigint references users(id) on delete set null,
         issue_photo_url text,
@@ -205,6 +205,13 @@ const MIGRATIONS: &[&str] = &[
     "#,
     r#"
     create index if not exists idx_safety_hazards_lab_id on safety_hazards(lab_id)
+    "#,
+    // Canonical create status is `open`. Migrate legacy default `reported` → `open`.
+    r#"
+    alter table safety_hazards alter column status set default 'open'
+    "#,
+    r#"
+    update safety_hazards set status = 'open' where status = 'reported'
     "#,
     r#"
     create table if not exists passkeys (

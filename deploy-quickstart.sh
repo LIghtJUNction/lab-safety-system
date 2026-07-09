@@ -1,59 +1,44 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+# Lab Safety System — one-click deploy (Linux / macOS / WSL)
+# Requires: Docker + Compose v2. No .env required for first run.
+set -euo pipefail
 
-echo "=== Laboratory Safety System Quickstart Deploy ==="
+echo "=== Lab Safety System — one-click deploy ==="
 
-random_hex() {
-  if command -v openssl >/dev/null 2>&1; then
-    openssl rand -hex 32
+COMPOSE_FILE=docker-compose.integrated.yml
+COMPOSE_URL=https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.integrated.yml
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker not found. Install Docker first." >&2
+  exit 1
+fi
+
+if [ ! -f "$COMPOSE_FILE" ]; then
+  echo "Downloading $COMPOSE_FILE ..."
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSLO "$COMPOSE_URL"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$COMPOSE_URL"
   else
-    od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
-    printf '\n'
+    echo "Need curl or wget to download compose file, or copy docker-compose.integrated.yml into this directory." >&2
+    exit 1
   fi
-}
-
-# Check if docker-compose.integrated.yml exists, otherwise download it
-if [ ! -f "docker-compose.integrated.yml" ]; then
-  echo "Downloading docker-compose.integrated.yml..."
-  curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.integrated.yml
 fi
 
-if [ ! -f ".env" ]; then
-  echo "Creating .env with generated install secrets..."
-  cat > .env <<EOF
-APP_ENV=production
-APP_HOST=0.0.0.0
-APP_PORT=8080
-POSTGRES_DB=lab_safety
-POSTGRES_USER=lab_safety
-POSTGRES_PASSWORD=$(random_hex)
-POSTGRES_PORT=5432
-SECRET_KEY=$(random_hex)
-TOKEN_TTL_SECONDS=3600
-UPLOAD_DIR=/app/uploads
-STATIC_DIR=/app/public
-SSO_ENABLED=false
-OAUTH_ENABLED=false
-SSO_LOGIN_URL=
-OAUTH_LOGIN_URL=
-FEDERATED_LOGIN_SECRET=
-WEBAUTHN_RP_ID=localhost
-WEBAUTHN_ORIGIN=http://localhost:8080
-CORS_ALLOWED_ORIGINS=
-EOF
-fi
+echo "Starting app + postgres..."
+docker compose -f "$COMPOSE_FILE" up -d
 
-# Run docker-compose
-echo "Starting services..."
-docker compose -f docker-compose.integrated.yml up -d
-
-echo "Waiting for backend services to be healthy..."
+echo "Waiting for app to become healthy..."
 HEALTHY=false
-for i in {1..30}; do
-  CONTAINER_ID=$(docker compose -f docker-compose.integrated.yml ps -q app)
-  if [ -n "$CONTAINER_ID" ]; then
-    STATUS=$(docker inspect --format='{{json .State.Health.Status}}' "$CONTAINER_ID")
-    if [ "$STATUS" = "\"healthy\"" ]; then
+for _ in $(seq 1 45); do
+  CID=$(docker compose -f "$COMPOSE_FILE" ps -q app 2>/dev/null || true)
+  if [ -n "$CID" ]; then
+    STATUS=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$CID" 2>/dev/null || true)
+    if [ "$STATUS" = "healthy" ]; then
+      HEALTHY=true
+      break
+    fi
+    if curl -fsS "http://127.0.0.1:8080/api/v1/ready" >/dev/null 2>&1; then
       HEALTHY=true
       break
     fi
@@ -62,21 +47,22 @@ for i in {1..30}; do
 done
 
 if [ "$HEALTHY" != "true" ]; then
-  echo "Backend did not become healthy within 60 seconds." >&2
-  docker compose -f docker-compose.integrated.yml ps
-  exit 1
+  echo "Warning: health wait timed out; compose status:" >&2
+  docker compose -f "$COMPOSE_FILE" ps || true
 fi
 
-# Bootstrap super admin
-echo "Creating system administrator with generated password..."
-docker compose -f docker-compose.integrated.yml exec -T app \
+echo "Bootstrapping system administrator (if missing)..."
+docker compose -f "$COMPOSE_FILE" exec -T app \
   lab-safety-system users bootstrap-super-admin \
   --username admin \
   --generate-password true \
-  --email admin@example.local || echo "System administrator already exists or creation skipped."
+  --email admin@example.local \
+  || echo "Admin already exists or bootstrap skipped."
 
-echo "=== Deployment Successful ==="
-echo "Access the system at: http://localhost:8080"
-echo "Initial administrator:"
-echo "Username: admin"
-echo "Password: use the Generated password printed above"
+echo ""
+echo "=== Done ==="
+echo "Open:      http://localhost:8080"
+echo "Username:  admin"
+echo "Password:  see Generated password above (only shown on first create)"
+echo ""
+echo "Optional later: create a .env to override POSTGRES_PASSWORD / SECRET_KEY / APP_PORT"

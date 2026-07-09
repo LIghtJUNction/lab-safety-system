@@ -31,59 +31,61 @@ docker --version
 docker compose version
 ```
 
-如果是在 Windows 上部署，推荐使用 PowerShell，并确保 Docker Desktop 使用 Linux containers。
+**零配置原则**：`docker-compose.integrated.yml` 内置可用默认值，**不强制 `.env`**。Windows / Linux 一键脚本只做：下载 compose → `up -d` → 等健康 → bootstrap 管理员。
 
-## 一键式整合部署
+## Windows（PowerShell，推荐）
 
-创建目录并下载配置：
+前置：安装 [Docker Desktop](https://www.docker.com/products/docker-desktop/)，使用 **Linux containers**。
 
-```bash
-mkdir -p lab-safety-system
-cd lab-safety-system
-curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.integrated.yml
-curl -fsSLo .env https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/.env.example
+```powershell
+mkdir lab-safety-system; cd lab-safety-system
+iwr https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/deploy-quickstart.ps1 -OutFile deploy-quickstart.ps1
+powershell -ExecutionPolicy Bypass -File .\deploy-quickstart.ps1
 ```
 
-如果系统没有 `curl`，也可以在浏览器下载这两个文件，放到同一个目录。
+- 不依赖 bash / curl / openssl，不写 `.env`
+- 服务名 `app` + `postgres`；访问 <http://localhost:8080>
+- 用户名 `admin`；密码看终端 `Generated password`（仅首次创建时打印）
 
-生成数据库密码和系统密钥：
+极简手动版（同样无 `.env`）：
 
-```bash
-openssl rand -base64 32
-openssl rand -hex 32
-```
-
-编辑 `.env`，至少替换：
-
-```env
-POSTGRES_PASSWORD=替换为生成的数据库强密码
-SECRET_KEY=替换为生成的随机长密钥
-```
-
-如果服务器上端口被占用，可以同时修改：
-
-```env
-APP_PORT=8080
-POSTGRES_PORT=5432
-```
-
-启动：
-
-```bash
+```powershell
+iwr https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.integrated.yml -OutFile docker-compose.integrated.yml
 docker compose -f docker-compose.integrated.yml up -d
+docker compose -f docker-compose.integrated.yml exec -T app lab-safety-system users bootstrap-super-admin --generate-password true
 ```
 
-查看状态：
+## Linux / macOS 一键部署
 
 ```bash
-docker compose -f docker-compose.integrated.yml ps
+mkdir -p lab-safety-system && cd lab-safety-system
+curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/deploy-quickstart.sh
+bash deploy-quickstart.sh
 ```
 
-等待 `app` 和 `postgres` 都进入 healthy 状态。
+或：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.integrated.yml
+docker compose -f docker-compose.integrated.yml up -d
+docker compose -f docker-compose.integrated.yml exec -T app \
+  lab-safety-system users bootstrap-super-admin --generate-password true
+```
+
+可选：以后用 `.env` 覆盖 `POSTGRES_PASSWORD` / `SECRET_KEY` / `APP_PORT`（生产建议改默认密钥）。
+
+## Arch Linux（AUR）
+
+```bash
+paru -S lab-safety-system-git
+sudo lab-safety-system-setup
+```
+
+`lab-safety-system-setup` 会启用 PostgreSQL、生成 env（已存在则不覆盖）、启动 systemd、尝试 bootstrap 管理员。
 
 ## 第一次管理员登录
 
-首次部署后，系统里还没有系统管理员。执行下面一条命令创建管理员，并让后端自动生成强密码：
+一键脚本通常已创建管理员。若需手动：
 
 ```bash
 docker compose -f docker-compose.integrated.yml exec app \

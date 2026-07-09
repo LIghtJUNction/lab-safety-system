@@ -142,8 +142,14 @@ pub(crate) async fn create_equipment(
     let actor = require_user(&state, &headers).await?;
     let (lab_id, lab_name) =
         resolve_lab_reference(&state.pool, payload.lab_id, payload.lab_name).await?;
+    // Prefer lab_id for multi-lab equipment ownership; system_admin may still register
+    // global equipment without a lab when only lab_name is provided for legacy installs.
     if let Some(lab_id) = lab_id {
         require_lab_manager(&state.pool, &actor, lab_id).await?;
+    } else if !is_system_admin(&actor) {
+        return Err(ApiError::bad_request(
+            "lab_id is required for non-system administrators",
+        ));
     } else {
         require_admin(&actor)?;
     }

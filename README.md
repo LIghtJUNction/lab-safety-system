@@ -27,54 +27,45 @@
 - 部署：Docker / Docker Compose
 - 镜像仓库：Docker Hub + GHCR
 
-## 快速部署
+## 快速部署（零配置）
 
-推荐使用整合镜像。它把前端静态页面和 Rust API 打包到一个容器，另起一个 PostgreSQL 容器。
+整合镜像：前端 + API 一个容器，PostgreSQL 另一个。**不需要手写 `.env`**，拉下来就能跑。
+
+### Windows（PowerShell + Docker Desktop）
+
+```powershell
+mkdir lab-safety-system; cd lab-safety-system
+iwr https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/deploy-quickstart.ps1 -OutFile deploy-quickstart.ps1
+powershell -ExecutionPolicy Bypass -File .\deploy-quickstart.ps1
+```
+
+打开 <http://localhost:8080>，用户名 `admin`，密码看终端里的 `Generated password`。
+
+### Linux / macOS
 
 ```bash
-mkdir -p lab-safety-system
-cd lab-safety-system
+mkdir -p lab-safety-system && cd lab-safety-system
+curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/deploy-quickstart.sh
+bash deploy-quickstart.sh
+```
+
+或只下一份 compose 后：
+
+```bash
 curl -fsSLO https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/docker-compose.integrated.yml
-curl -fsSLo .env https://raw.githubusercontent.com/LIghtJUNction/lab-safety-system/main/.env.example
-```
-
-生成强密码和强密钥：
-
-```bash
-openssl rand -base64 32
-openssl rand -hex 32
-```
-
-编辑 `.env`，至少替换：
-
-```env
-POSTGRES_PASSWORD=替换为数据库强密码
-SECRET_KEY=替换为随机长密钥
-```
-
-启动：
-
-```bash
 docker compose -f docker-compose.integrated.yml up -d
+docker compose -f docker-compose.integrated.yml exec app \
+  lab-safety-system users bootstrap-super-admin --generate-password true
 ```
 
-首次创建系统管理员，后端会自动生成强密码：
+### Arch Linux（AUR）
 
 ```bash
-docker compose -f docker-compose.integrated.yml exec app \
-  lab-safety-system users bootstrap-super-admin \
-  --generate-password true
+paru -S lab-safety-system-git
+sudo lab-safety-system-setup   # 配 PostgreSQL、写 env、启动服务、创建 admin
 ```
 
-命令输出 `Generated password` 后，使用下面的信息登录：
-
-- 地址：`http://服务器IP:8080`
-- 用户名：`admin`
-- 密码：命令输出的强密码
-
-完整部署、Windows/macOS/Linux/NAS/ARM64、分离部署、升级和排错见 [`docs/deployment.md`](./docs/deployment.md)。
-
-管理员密码不能从 Docker 或数据库中读取明文；首次创建和忘记密码时都使用 `--generate-password true` 让后端生成并打印新密码，具体命令见部署教程。
+生产环境更细的反向代理、换密钥、Windows/NAS/ARM64 说明见 [`docs/deployment.md`](./docs/deployment.md)。
 
 ## 镜像地址
 

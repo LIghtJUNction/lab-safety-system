@@ -399,6 +399,92 @@ async fn backend_safety_management_flow_is_enforced() -> anyhow::Result<()> {
 
     assert_eq!(hazard["lab_id"], lab["id"]);
     assert_eq!(hazard["lab_name"], lab["name"]);
+    // Canonical create status is `open` (not legacy `reported`).
+    assert_eq!(hazard["status"], "open");
+
+    // Missing lab_id must fail for multi-lab hazard create.
+    let (status, missing_lab) = json_request(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/hazards",
+        Some(&ctx.researcher_token),
+        serde_json::json!({
+            "title": "no lab",
+            "category": "chemical",
+            "description": "must bind lab",
+            "reported_by": ctx.researcher_id
+        }),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        missing_lab["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("lab_id")),
+        "{missing_lab}"
+    );
+
+    // Non-member cannot list or create under another lab.
+    let outsider_username = format!("outsider_{}", ctx.schema);
+    let (status, outsider) = json_request(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/users",
+        Some(&ctx.admin_token),
+        serde_json::json!({
+            "username": outsider_username,
+            "display_name": "Outsider",
+            "email": format!("{}@example.com", outsider_username),
+            "role": "lab_member",
+            "auth_provider": "password",
+            "department": "other",
+            "password": "OutsiderStrong123!"
+        }),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (status, outsider_login) = json_request(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/auth/password-login",
+        None,
+        serde_json::json!({
+            "username": outsider_username,
+            "password": "OutsiderStrong123!"
+        }),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let outsider_token = outsider_login["access_token"]
+        .as_str()
+        .expect("outsider access_token");
+
+    let (status, _) = request(
+        &ctx.app,
+        Method::GET,
+        &format!("/api/v1/hazards?lab_id={}", lab["id"]),
+        Some(outsider_token),
+        Body::empty(),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = json_request(
+        &ctx.app,
+        Method::POST,
+        "/api/v1/hazards",
+        Some(outsider_token),
+        serde_json::json!({
+            "title": "intrusion",
+            "lab_id": lab["id"],
+            "category": "chemical",
+            "description": "non-member must not create",
+            "reported_by": outsider["id"]
+        }),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 
     let (status, lab_hazards) = request(
         &ctx.app,
