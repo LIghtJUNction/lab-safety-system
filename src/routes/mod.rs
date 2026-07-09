@@ -1,11 +1,6 @@
 use std::sync::Arc;
 
-use axum::{
-    Json, Router,
-    extract::State,
-    http::HeaderMap,
-    routing::get,
-};
+use axum::{Json, Router, extract::State, http::HeaderMap, routing::get};
 use sqlx::Row;
 
 use crate::route_support::*;

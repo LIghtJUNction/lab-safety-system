@@ -8,8 +8,8 @@ use axum::{
 use crate::route_documents::{
     create_incident, create_regulation, list_incidents, list_regulations,
 };
-use crate::route_uploads::{upload_incident_file, upload_regulation_file};
 use crate::route_support::AppState;
+use crate::route_uploads::{upload_incident_file, upload_regulation_file};
 
 pub fn documents_routes() -> Router<Arc<AppState>> {
     Router::new()

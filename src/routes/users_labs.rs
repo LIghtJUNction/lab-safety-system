@@ -5,11 +5,11 @@ use axum::{
     routing::{delete, get, patch},
 };
 
+use crate::route_support::AppState;
 use crate::route_users_labs::{
     assign_lab_user, create_lab, create_user, get_lab, list_lab_users, list_labs, list_users,
     remove_lab_user, update_lab, update_user,
 };
-use crate::route_support::AppState;
 
 pub fn users_labs_routes() -> Router<Arc<AppState>> {
     Router::new()

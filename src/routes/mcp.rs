@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::State,
     routing::{get, post},
-    Json, Router,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 
 use crate::route_support::{ApiError, AppState};
@@ -41,15 +41,18 @@ pub(crate) async fn dispatch_lab_safety_action(
                 .await
             }
             .map_err(|e| ApiError::bad_request(format!("db error: {}", e)))?;
-            let labs: Vec<Value> = rows.into_iter().map(|r| {
-                json!({
-                    "id": r.get::<i64, _>("id"),
-                    "code": r.get::<String, _>("code"),
-                    "name": r.get::<String, _>("name"),
-                    "location": r.get::<Option<String>, _>("location"),
-                    "status": r.get::<String, _>("status"),
+            let labs: Vec<Value> = rows
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.get::<i64, _>("id"),
+                        "code": r.get::<String, _>("code"),
+                        "name": r.get::<String, _>("name"),
+                        "location": r.get::<Option<String>, _>("location"),
+                        "status": r.get::<String, _>("status"),
+                    })
                 })
-            }).collect();
+                .collect();
             Ok(json!({ "action": action, "result": labs, "count": labs.len() }))
         }
         "list_hazards" => {
@@ -59,24 +62,39 @@ pub(crate) async fn dispatch_lab_safety_action(
             .fetch_all(pool)
             .await
             .map_err(|e| ApiError::bad_request(format!("db: {}", e)))?;
-            let items: Vec<Value> = rows.into_iter().map(|r| json!({
-                "id": r.get::<i64,_>("id"),
-                "title": r.get::<String,_>("title"),
-                "lab_name": r.get::<String,_>("lab_name"),
-                "status": r.get::<String,_>("status"),
-            })).collect();
+            let items: Vec<Value> = rows
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "id": r.get::<i64,_>("id"),
+                        "title": r.get::<String,_>("title"),
+                        "lab_name": r.get::<String,_>("lab_name"),
+                        "status": r.get::<String,_>("status"),
+                    })
+                })
+                .collect();
             Ok(json!({ "action": action, "result": items }))
         }
         "create_hazard" => {
-            let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("MCP created hazard").to_string();
-            let lab_name_arg = args.get("lab_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let title = args
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("MCP created hazard")
+                .to_string();
+            let lab_name_arg = args
+                .get("lab_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             let (_, lab_name) = crate::route_users_labs::resolve_lab_reference(
                 pool,
                 args.get("lab_id").and_then(|v| v.as_i64()),
                 lab_name_arg.clone(),
-            ).await.unwrap_or((None, lab_name_arg.unwrap_or_else(|| "demo-lab".to_string())));
+            )
+            .await
+            .unwrap_or((None, lab_name_arg.unwrap_or_else(|| "demo-lab".to_string())));
 
-            let reported_by: i64 = if let Some(v) = args.get("reported_by").and_then(|v| v.as_i64()) {
+            let reported_by: i64 = if let Some(v) = args.get("reported_by").and_then(|v| v.as_i64())
+            {
                 v
             } else {
                 sqlx::query_scalar::<_, i64>("select id from users order by id asc limit 1")
@@ -87,7 +105,11 @@ pub(crate) async fn dispatch_lab_safety_action(
                     .unwrap_or(1)
             };
 
-            let desc = args.get("description").and_then(|v| v.as_str()).unwrap_or("via mcp big tool").to_string();
+            let desc = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("via mcp big tool")
+                .to_string();
 
             let id: i64 = sqlx::query_scalar(
                 r#"insert into safety_hazards (title, lab_name, category, description, reported_by, status)
@@ -100,27 +122,44 @@ pub(crate) async fn dispatch_lab_safety_action(
             .fetch_one(pool)
             .await
             .map_err(|e| ApiError::bad_request(format!("insert err: {}", e)))?;
-            Ok(json!({ "action": action, "result": { "id": id, "title": title, "status": "open", "lab_name": lab_name } }))
+            Ok(
+                json!({ "action": action, "result": { "id": id, "title": title, "status": "open", "lab_name": lab_name } }),
+            )
         }
         "list_regulations" | "list_documents" => {
             let rows = sqlx::query("select id, title, regulation_type from regulations limit 5")
-                .fetch_all(pool).await.map_err(|e| ApiError::bad_request(format!("db: {}",e)))?;
-            let res: Vec<Value> = rows.iter().map(|r| json!({"id": r.get::<i64,_>("id"), "title": r.get::<String,_>("title") })).collect();
+                .fetch_all(pool)
+                .await
+                .map_err(|e| ApiError::bad_request(format!("db: {}", e)))?;
+            let res: Vec<Value> = rows
+                .iter()
+                .map(|r| json!({"id": r.get::<i64,_>("id"), "title": r.get::<String,_>("title") }))
+                .collect();
             Ok(json!({ "action": action, "result": res }))
         }
         "list_equipment" | "list_operations" => {
             let rows = sqlx::query("select id, name, status from equipment limit 5")
-                .fetch_all(pool).await.map_err(|e| ApiError::bad_request(format!("db: {}",e)))?;
+                .fetch_all(pool)
+                .await
+                .map_err(|e| ApiError::bad_request(format!("db: {}", e)))?;
             let res: Vec<Value> = rows.iter().map(|r| json!({"id": r.get::<i64,_>("id"), "name": r.get::<String,_>("name"), "status": r.get::<String,_>("status") })).collect();
             Ok(json!({ "action": action, "result": res }))
         }
         "list_incidents" => {
             let rows = sqlx::query("select id, title, severity from incident_cases limit 5")
-                .fetch_all(pool).await.map_err(|e| ApiError::bad_request(format!("db: {}",e)))?;
-            let res: Vec<Value> = rows.iter().map(|r| json!({"id": r.get::<i64,_>("id"), "title": r.get::<String,_>("title") })).collect();
+                .fetch_all(pool)
+                .await
+                .map_err(|e| ApiError::bad_request(format!("db: {}", e)))?;
+            let res: Vec<Value> = rows
+                .iter()
+                .map(|r| json!({"id": r.get::<i64,_>("id"), "title": r.get::<String,_>("title") }))
+                .collect();
             Ok(json!({ "action": action, "result": res }))
         }
-        _ => Err(ApiError::bad_request(format!("unknown action '{}' for lab_safety tool", action))),
+        _ => Err(ApiError::bad_request(format!(
+            "unknown action '{}' for lab_safety tool",
+            action
+        ))),
     }
 }
 
@@ -179,7 +218,7 @@ struct McpToolCall {
     #[allow(dead_code)]
     tool: Option<String>, // expect "lab_safety"
     arguments: Option<Value>, // { "action": "...", ... }
-    action: Option<String>, // direct support too
+    action: Option<String>,   // direct support too
     #[serde(flatten)]
     extra: Value,
 }
@@ -196,20 +235,30 @@ async fn call_mcp_tool(
     {
         let rt = state.mcp_runtime.lock().await;
         if !rt.enabled {
-            return Err(ApiError::bad_request("MCP is disabled (set MCP_ENABLED=true or POST /mcp {\"enabled\":true})"));
+            return Err(ApiError::bad_request(
+                "MCP is disabled (set MCP_ENABLED=true or POST /mcp {\"enabled\":true})",
+            ));
         }
     }
 
     // support both {tool: "lab_safety", arguments: {action: "xx", ...}} and flat
-    let _tool = payload.tool.clone().unwrap_or_else(|| "lab_safety".to_string()); // use the big tool name
+    let _tool = payload
+        .tool
+        .clone()
+        .unwrap_or_else(|| "lab_safety".to_string()); // use the big tool name
     let args = payload.arguments.unwrap_or(payload.extra);
     let action = payload
         .action
-        .or_else(|| args.get("action").and_then(|v| v.as_str().map(|s| s.to_string())))
+        .or_else(|| {
+            args.get("action")
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+        })
         .unwrap_or_default();
 
     if action.is_empty() {
-        return Err(ApiError::bad_request("action (grouping param) is required and cannot be empty/null"));
+        return Err(ApiError::bad_request(
+            "action (grouping param) is required and cannot be empty/null",
+        ));
     }
 
     // Use extracted pure dispatch (plan requirement).
@@ -230,7 +279,8 @@ mod tests {
     fn dispatcher_rejects_empty_action() {
         // mirrors the check in call_mcp_tool
         let action = "";
-        let err = ApiError::bad_request("action (grouping param) is required and cannot be empty/null");
+        let err =
+            ApiError::bad_request("action (grouping param) is required and cannot be empty/null");
         assert!(action.is_empty());
         assert!(err.message.contains("action"));
     }
@@ -273,7 +323,10 @@ mod tests {
             settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
-            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime { enabled: true, config: None }),
+            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime {
+                enabled: true,
+                config: None,
+            }),
         });
         let app = mcp_routes().with_state(state);
 
@@ -281,7 +334,9 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 200);
 
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "ok");
         assert_eq!(json["tool_name"], "lab_safety");
@@ -293,18 +348,33 @@ mod tests {
     async fn test_call_mcp_tool_bad_action_drives_real_handler() {
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid:5432/test").expect("lazy");
         let settings = crate::config::Settings {
-            app_env: "test".into(), bind_addr: "127.0.0.1:0".parse().unwrap(),
-            database_url: "postgres://test".into(), secret_key: "test".into(),
-            token_ttl_seconds: 3600, upload_dir: "/tmp".into(), static_dir: None,
-            sso_enabled: false, oauth_enabled: false, sso_login_url: None, oauth_login_url: None,
-            federated_login_secret: None, webauthn_rp_id: "l".into(), webauthn_origin: "http://l".into(),
-            cors_allowed_origins: vec![], mcp_enabled: true, mcp_config: None,
+            app_env: "test".into(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url: "postgres://test".into(),
+            secret_key: "test".into(),
+            token_ttl_seconds: 3600,
+            upload_dir: "/tmp".into(),
+            static_dir: None,
+            sso_enabled: false,
+            oauth_enabled: false,
+            sso_login_url: None,
+            oauth_login_url: None,
+            federated_login_secret: None,
+            webauthn_rp_id: "l".into(),
+            webauthn_origin: "http://l".into(),
+            cors_allowed_origins: vec![],
+            mcp_enabled: true,
+            mcp_config: None,
         };
         let state = Arc::new(AppState {
-            pool, settings,
+            pool,
+            settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
-            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime { enabled: true, config: None }),
+            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime {
+                enabled: true,
+                config: None,
+            }),
         });
         let app = mcp_routes().with_state(state);
 
@@ -312,10 +382,13 @@ mod tests {
             .uri("/mcp/call")
             .method("POST")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"action":""}"#)).unwrap();
+            .body(Body::from(r#"{"action":""}"#))
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 400);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert!(json["detail"].as_str().unwrap_or("").contains("action"));
     }
@@ -325,18 +398,33 @@ mod tests {
     async fn test_call_mcp_tool_disabled_gates_real_handler() {
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid:5432/test").expect("lazy");
         let settings = crate::config::Settings {
-            app_env: "test".into(), bind_addr: "127.0.0.1:0".parse().unwrap(),
-            database_url: "postgres://test".into(), secret_key: "test".into(),
-            token_ttl_seconds: 3600, upload_dir: "/tmp".into(), static_dir: None,
-            sso_enabled: false, oauth_enabled: false, sso_login_url: None, oauth_login_url: None,
-            federated_login_secret: None, webauthn_rp_id: "l".into(), webauthn_origin: "http://l".into(),
-            cors_allowed_origins: vec![], mcp_enabled: false, mcp_config: None,
+            app_env: "test".into(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url: "postgres://test".into(),
+            secret_key: "test".into(),
+            token_ttl_seconds: 3600,
+            upload_dir: "/tmp".into(),
+            static_dir: None,
+            sso_enabled: false,
+            oauth_enabled: false,
+            sso_login_url: None,
+            oauth_login_url: None,
+            federated_login_secret: None,
+            webauthn_rp_id: "l".into(),
+            webauthn_origin: "http://l".into(),
+            cors_allowed_origins: vec![],
+            mcp_enabled: false,
+            mcp_config: None,
         };
         let state = Arc::new(AppState {
-            pool, settings,
+            pool,
+            settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
-            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime { enabled: false, config: None }),
+            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime {
+                enabled: false,
+                config: None,
+            }),
         });
         let app = mcp_routes().with_state(state);
 
@@ -344,13 +432,20 @@ mod tests {
             .uri("/mcp/call")
             .method("POST")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"action":"list_hazards"}"#)).unwrap();
+            .body(Body::from(r#"{"action":"list_hazards"}"#))
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 400);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         let detail = json["detail"].as_str().unwrap_or("");
-        assert!(detail.contains("MCP is disabled"), "gate message: {}", detail);
+        assert!(
+            detail.contains("MCP is disabled"),
+            "gate message: {}",
+            detail
+        );
     }
 
     // Drives real update + get handlers: POST /mcp can toggle enabled and it reflects in subsequent GET (runtime persisted in state)
@@ -358,18 +453,33 @@ mod tests {
     async fn test_mcp_config_post_updates_enabled_and_get_reflects_runtime() {
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid:5432/test").expect("lazy");
         let settings = crate::config::Settings {
-            app_env: "test".into(), bind_addr: "127.0.0.1:0".parse().unwrap(),
-            database_url: "postgres://test".into(), secret_key: "test".into(),
-            token_ttl_seconds: 3600, upload_dir: "/tmp".into(), static_dir: None,
-            sso_enabled: false, oauth_enabled: false, sso_login_url: None, oauth_login_url: None,
-            federated_login_secret: None, webauthn_rp_id: "l".into(), webauthn_origin: "http://l".into(),
-            cors_allowed_origins: vec![], mcp_enabled: false, mcp_config: None,
+            app_env: "test".into(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url: "postgres://test".into(),
+            secret_key: "test".into(),
+            token_ttl_seconds: 3600,
+            upload_dir: "/tmp".into(),
+            static_dir: None,
+            sso_enabled: false,
+            oauth_enabled: false,
+            sso_login_url: None,
+            oauth_login_url: None,
+            federated_login_secret: None,
+            webauthn_rp_id: "l".into(),
+            webauthn_origin: "http://l".into(),
+            cors_allowed_origins: vec![],
+            mcp_enabled: false,
+            mcp_config: None,
         };
         let state = Arc::new(AppState {
-            pool, settings,
+            pool,
+            settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
-            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime { enabled: false, config: None }),
+            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime {
+                enabled: false,
+                config: None,
+            }),
         });
         let app = mcp_routes().with_state(state.clone());
 
@@ -378,10 +488,15 @@ mod tests {
             .uri("/mcp")
             .method("POST")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"enabled":true,"config":"{\"test\":\"via-post\"}"}"#)).unwrap();
+            .body(Body::from(
+                r#"{"enabled":true,"config":"{\"test\":\"via-post\"}"}"#,
+            ))
+            .unwrap();
         let post_resp = app.clone().oneshot(post_req).await.unwrap();
         assert_eq!(post_resp.status(), 200);
-        let post_body = axum::body::to_bytes(post_resp.into_body(), usize::MAX).await.unwrap();
+        let post_body = axum::body::to_bytes(post_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let post_json: Value = serde_json::from_slice(&post_body).unwrap();
         assert_eq!(post_json["enabled"], true);
 
@@ -389,7 +504,9 @@ mod tests {
         let get_req = Request::builder().uri("/mcp").body(Body::empty()).unwrap();
         let get_resp = app.oneshot(get_req).await.unwrap();
         assert_eq!(get_resp.status(), 200);
-        let get_body = axum::body::to_bytes(get_resp.into_body(), usize::MAX).await.unwrap();
+        let get_body = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let get_json: Value = serde_json::from_slice(&get_body).unwrap();
         assert_eq!(get_json["enabled"], true);
         assert_eq!(get_json["runtime_config"]["test"], "via-post");
@@ -401,48 +518,93 @@ mod tests {
     async fn test_mcp_disable_via_config_then_call_400_then_reenable() {
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid:5432/test").expect("lazy");
         let settings = crate::config::Settings {
-            app_env: "test".into(), bind_addr: "127.0.0.1:0".parse().unwrap(),
-            database_url: "postgres://test".into(), secret_key: "test".into(),
-            token_ttl_seconds: 3600, upload_dir: "/tmp".into(), static_dir: None,
-            sso_enabled: false, oauth_enabled: false, sso_login_url: None, oauth_login_url: None,
-            federated_login_secret: None, webauthn_rp_id: "l".into(), webauthn_origin: "http://l".into(),
-            cors_allowed_origins: vec![], mcp_enabled: true, mcp_config: None,
+            app_env: "test".into(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_url: "postgres://test".into(),
+            secret_key: "test".into(),
+            token_ttl_seconds: 3600,
+            upload_dir: "/tmp".into(),
+            static_dir: None,
+            sso_enabled: false,
+            oauth_enabled: false,
+            sso_login_url: None,
+            oauth_login_url: None,
+            federated_login_secret: None,
+            webauthn_rp_id: "l".into(),
+            webauthn_origin: "http://l".into(),
+            cors_allowed_origins: vec![],
+            mcp_enabled: true,
+            mcp_config: None,
         };
         let state = Arc::new(AppState {
-            pool, settings,
+            pool,
+            settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
-            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime { enabled: true, config: None }),
+            mcp_runtime: TokioMutex::new(crate::route_support::McpRuntime {
+                enabled: true,
+                config: None,
+            }),
         });
         let app = mcp_routes().with_state(state.clone());
 
         // disable via config endpoint
-        let dis = Request::builder().uri("/mcp").method("POST").header("content-type", "application/json")
-            .body(Body::from(r#"{"enabled":false}"#)).unwrap();
+        let dis = Request::builder()
+            .uri("/mcp")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"enabled":false}"#))
+            .unwrap();
         let r = app.clone().oneshot(dis).await.unwrap();
         assert_eq!(r.status(), 200);
 
         // call should be gated
-        let bad = Request::builder().uri("/mcp/call").method("POST").header("content-type", "application/json")
-            .body(Body::from(r#"{"action":"list_hazards"}"#)).unwrap();
+        let bad = Request::builder()
+            .uri("/mcp/call")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"action":"list_hazards"}"#))
+            .unwrap();
         let r = app.clone().oneshot(bad).await.unwrap();
         assert_eq!(r.status(), 400);
-        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let j: Value = serde_json::from_slice(&body).unwrap();
-        assert!(j["detail"].as_str().unwrap_or("").contains("MCP is disabled"));
+        assert!(
+            j["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("MCP is disabled")
+        );
 
         // re-enable
-        let en = Request::builder().uri("/mcp").method("POST").header("content-type", "application/json")
-            .body(Body::from(r#"{"enabled":true}"#)).unwrap();
+        let en = Request::builder()
+            .uri("/mcp")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"enabled":true}"#))
+            .unwrap();
         let _ = app.clone().oneshot(en).await.unwrap();
 
         // now a call reaches the action parser (empty action error, not disabled)
-        let empty = Request::builder().uri("/mcp/call").method("POST").header("content-type", "application/json")
-            .body(Body::from(r#"{"action":""}"#)).unwrap();
+        let empty = Request::builder()
+            .uri("/mcp/call")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"action":""}"#))
+            .unwrap();
         let r = app.oneshot(empty).await.unwrap();
         assert_eq!(r.status(), 400);
-        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let j: Value = serde_json::from_slice(&body).unwrap();
-        assert!(j["detail"].as_str().unwrap_or("").contains("action (grouping param)"));
+        assert!(
+            j["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("action (grouping param)")
+        );
     }
 }

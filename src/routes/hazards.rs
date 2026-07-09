@@ -8,10 +8,8 @@ use axum::{
 use crate::route_hazards::{
     claim_hazard, create_hazard, list_hazards, remediate_hazard, update_hazard_status,
 };
-use crate::route_uploads::{
-    upload_hazard_issue_photo, upload_hazard_remediation_photo,
-};
 use crate::route_support::AppState;
+use crate::route_uploads::{upload_hazard_issue_photo, upload_hazard_remediation_photo};
 
 pub fn hazards_routes() -> Router<Arc<AppState>> {
     Router::new()

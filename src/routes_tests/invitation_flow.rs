@@ -62,9 +62,7 @@ async fn invitation_registration_enforces_limits_and_lab_role() -> anyhow::Resul
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    let invite_code = invitation["code"]
-        .as_str()
-        .expect("invitation code string");
+    let invite_code = invitation["code"].as_str().expect("invitation code string");
 
     let (status, public_info) = request(
         &ctx.app,

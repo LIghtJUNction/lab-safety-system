@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use axum::{
-    Router,
-    routing::get,
-};
+use axum::{Router, routing::get};
 
 use crate::route_settings::{get_login_carousel, reset_login_carousel, update_login_carousel};
 use crate::route_support::AppState;
