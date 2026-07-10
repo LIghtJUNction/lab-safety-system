@@ -26,14 +26,15 @@ use crate::{
 };
 
 pub(crate) async fn auth_methods(State(state): State<Arc<AppState>>) -> Json<AuthMethods> {
+    let runtime = state.auth_runtime.read().await;
     let sso_login_url = federated_login_url(
-        state.settings.sso_enabled,
-        state.settings.sso_login_url.as_deref(),
+        runtime.sso_enabled,
+        runtime.sso_login_url.as_deref(),
         "/api/v1/auth/sso/callback",
     );
     let oauth_login_url = federated_login_url(
-        state.settings.oauth_enabled,
-        state.settings.oauth_login_url.as_deref(),
+        runtime.oauth_enabled,
+        runtime.oauth_login_url.as_deref(),
         "/api/v1/auth/oauth/callback",
     );
     Json(AuthMethods {
@@ -303,20 +304,29 @@ pub(crate) async fn sso_callback(
     State(state): State<Arc<AppState>>,
     Query(payload): Query<FederatedLoginQuery>,
 ) -> Result<Html<String>, ApiError> {
-    federated_callback(&state, "sso", state.settings.sso_enabled, payload).await
+    let runtime = state.auth_runtime.read().await;
+    let enabled = runtime.sso_enabled;
+    let secret = runtime.federated_login_secret.clone();
+    drop(runtime);
+    federated_callback(&state, "sso", enabled, secret, payload).await
 }
 
 pub(crate) async fn oauth_callback(
     State(state): State<Arc<AppState>>,
     Query(payload): Query<FederatedLoginQuery>,
 ) -> Result<Html<String>, ApiError> {
-    federated_callback(&state, "oauth", state.settings.oauth_enabled, payload).await
+    let runtime = state.auth_runtime.read().await;
+    let enabled = runtime.oauth_enabled;
+    let secret = runtime.federated_login_secret.clone();
+    drop(runtime);
+    federated_callback(&state, "oauth", enabled, secret, payload).await
 }
 
 async fn federated_callback(
     state: &AppState,
     provider: &'static str,
     enabled: bool,
+    secret: Option<String>,
     payload: FederatedLoginQuery,
 ) -> Result<Html<String>, ApiError> {
     if !enabled {
@@ -334,7 +344,7 @@ async fn federated_callback(
     if exp < chrono::Utc::now().timestamp() {
         return Err(ApiError::unauthorized("Federated login payload expired"));
     }
-    let Some(secret) = state.settings.federated_login_secret.as_deref() else {
+    let Some(secret) = secret.as_deref() else {
         return Err(ApiError::forbidden(
             "FEDERATED_LOGIN_SECRET is required for SSO/OAuth callbacks",
         ));

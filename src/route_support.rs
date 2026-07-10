@@ -7,13 +7,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use webauthn_rs::prelude::{
     Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
     RegisterPublicKeyCredential,
 };
 
-use crate::config::Settings;
+use crate::{auth_settings::AuthRuntimeSettings, config::Settings};
 use serde_json::Value;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -25,6 +25,7 @@ pub(crate) struct McpRuntime {
 pub struct AppState {
     pub pool: PgPool,
     pub settings: Settings,
+    pub auth_runtime: RwLock<AuthRuntimeSettings>,
     pub passkey_registrations: Mutex<PasskeyRegistrationCache>,
     pub passkey_authentications: Mutex<PasskeyAuthenticationCache>,
     pub mcp_runtime: Mutex<McpRuntime>,
@@ -80,16 +81,52 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    fn from_sqlx(error: &sqlx::Error) -> Self {
+        if let sqlx::Error::Database(database_error) = error {
+            match database_error.code().as_deref() {
+                Some("23505") => {
+                    let message = match database_error.constraint() {
+                        Some("users_username_key") => "A user with this username already exists",
+                        Some("users_email_key") => "A user with this email already exists",
+                        _ => "A record with the same unique value already exists",
+                    };
+                    return Self::conflict(message);
+                }
+                Some("23502") => return Self::bad_request("A required value is missing"),
+                Some("23503") => {
+                    return Self::conflict(
+                        "The referenced record does not exist or is still in use",
+                    );
+                }
+                Some("23514") => {
+                    return Self::bad_request("A value does not satisfy the required constraints");
+                }
+                _ => {}
+            }
+        }
+
+        tracing::error!(error = ?error, "database operation failed");
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "An internal server error occurred".to_string(),
+        }
+    }
 }
 
 impl<E> From<E> for ApiError
 where
-    E: std::error::Error,
+    E: std::error::Error + 'static,
 {
     fn from(error: E) -> Self {
+        let error_ref = &error as &(dyn std::error::Error + 'static);
+        if let Some(sqlx_error) = error_ref.downcast_ref::<sqlx::Error>() {
+            return Self::from_sqlx(sqlx_error);
+        }
+        tracing::error!(error = ?error, "internal operation failed");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: error.to_string(),
+            message: "An internal server error occurred".to_string(),
         }
     }
 }

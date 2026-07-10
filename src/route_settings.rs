@@ -1,13 +1,200 @@
 use std::sync::Arc;
 
 use axum::{Json, extract::State, http::HeaderMap};
+use serde::{Deserialize, Serialize};
 
 use crate::{
+    auth_settings::{self, AuthRuntimeSettings},
     models::{CarouselSlide, LoginCarouselSettings, SiteSetting},
     route_permissions::is_system_admin,
     route_support::{ApiError, AppState},
     routes::require_user,
 };
+
+pub(crate) async fn get_auth_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    if !is_system_admin(&actor) {
+        return Err(ApiError::forbidden(
+            "Only system administrator can view authentication settings",
+        ));
+    }
+
+    let runtime = state.auth_runtime.read().await;
+    Ok(Json(auth_settings_value(&runtime)?))
+}
+
+fn auth_settings_value(runtime: &AuthRuntimeSettings) -> Result<serde_json::Value, ApiError> {
+    Ok(serde_json::to_value(AuthSettingsView {
+        sso_enabled: runtime.sso_enabled,
+        sso_login_url: runtime.sso_login_url.as_deref(),
+        oauth_enabled: runtime.oauth_enabled,
+        oauth_login_url: runtime.oauth_login_url.as_deref(),
+        federated_login_secret_configured: runtime.valid_federated_login_secret().is_some(),
+    })?)
+}
+
+pub(crate) async fn get_deployment_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<DeploymentSettingsView<'static>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    if !is_system_admin(&actor) {
+        return Err(ApiError::forbidden(
+            "Only system administrator can view deployment settings",
+        ));
+    }
+
+    Ok(Json(DeploymentSettingsView {
+        app_env: state.settings.app_env.clone(),
+        token_ttl_seconds: state.settings.token_ttl_seconds,
+        webauthn_rp_id: state.settings.webauthn_rp_id.clone(),
+        webauthn_origin: state.settings.webauthn_origin.clone(),
+        cors_allowed_origins: state.settings.cors_allowed_origins.clone(),
+        mcp_enabled: state.settings.mcp_enabled,
+        callback_paths: CallbackPaths {
+            sso: "/api/v1/auth/sso/callback",
+            oauth: "/api/v1/auth/oauth/callback",
+        },
+    }))
+}
+
+#[derive(Serialize)]
+pub(crate) struct DeploymentSettingsView<'a> {
+    app_env: String,
+    token_ttl_seconds: i64,
+    webauthn_rp_id: String,
+    webauthn_origin: String,
+    cors_allowed_origins: Vec<String>,
+    mcp_enabled: bool,
+    callback_paths: CallbackPaths<'a>,
+}
+
+#[derive(Serialize)]
+struct CallbackPaths<'a> {
+    sso: &'a str,
+    oauth: &'a str,
+}
+
+#[derive(Serialize)]
+struct AuthSettingsView<'a> {
+    sso_enabled: bool,
+    sso_login_url: Option<&'a str>,
+    oauth_enabled: bool,
+    oauth_login_url: Option<&'a str>,
+    federated_login_secret_configured: bool,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AuthSettingsPatch {
+    sso_enabled: bool,
+    sso_login_url: Option<String>,
+    oauth_enabled: bool,
+    oauth_login_url: Option<String>,
+    federated_login_secret: Option<String>,
+    #[serde(default)]
+    clear_federated_login_secret: bool,
+}
+
+pub(crate) async fn update_auth_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<AuthSettingsPatch>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    if !is_system_admin(&actor) {
+        return Err(ApiError::forbidden(
+            "Only system administrator can update authentication settings",
+        ));
+    }
+
+    let mut runtime = state.auth_runtime.write().await;
+    let submitted_secret = payload
+        .federated_login_secret
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if submitted_secret
+        .is_some_and(|secret| secret.len() < auth_settings::MIN_FEDERATED_SECRET_LENGTH)
+    {
+        return Err(ApiError::bad_request(
+            "Federated login secret must be at least 32 characters",
+        ));
+    }
+    let new_secret = auth_settings::normalize_federated_secret(submitted_secret);
+    let secret_configured = if payload.clear_federated_login_secret {
+        false
+    } else {
+        new_secret.is_some() || runtime.valid_federated_login_secret().is_some()
+    };
+    if payload.sso_enabled {
+        validate_login_url(payload.sso_login_url.as_deref(), "SSO")?;
+    }
+    if payload.oauth_enabled {
+        validate_login_url(payload.oauth_login_url.as_deref(), "OAuth")?;
+    }
+    if (payload.sso_enabled || payload.oauth_enabled) && !secret_configured {
+        return Err(ApiError::bad_request(
+            "A federated login secret is required when SSO or OAuth is enabled",
+        ));
+    }
+    if payload.clear_federated_login_secret && (payload.sso_enabled || payload.oauth_enabled) {
+        return Err(ApiError::bad_request(
+            "Federated login secret cannot be cleared while SSO or OAuth is enabled",
+        ));
+    }
+    let candidate = AuthRuntimeSettings {
+        sso_enabled: payload.sso_enabled,
+        sso_login_url: normalized_url(payload.sso_login_url),
+        oauth_enabled: payload.oauth_enabled,
+        oauth_login_url: normalized_url(payload.oauth_login_url),
+        federated_login_secret: if payload.clear_federated_login_secret {
+            None
+        } else {
+            new_secret.or_else(|| {
+                runtime
+                    .valid_federated_login_secret()
+                    .map(ToString::to_string)
+            })
+        },
+    };
+    auth_settings::save(&state.pool, &candidate, &state.settings.secret_key)
+        .await
+        .map_err(|error| {
+            tracing::error!(error = ?error, "authentication settings persistence failed");
+            ApiError {
+                status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                message: "Authentication settings could not be saved".to_string(),
+            }
+        })?;
+    *runtime = candidate;
+    Ok(Json(auth_settings_value(&runtime)?))
+}
+
+fn normalized_url(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_login_url(value: Option<&str>, provider: &str) -> Result<(), ApiError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Err(ApiError::bad_request(format!(
+            "{provider} login URL is required when enabled"
+        )));
+    };
+    let uri = value
+        .parse::<axum::http::Uri>()
+        .map_err(|_| ApiError::bad_request(format!("{provider} login URL must be valid")))?;
+    if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.authority().is_none() {
+        return Err(ApiError::bad_request(format!(
+            "{provider} login URL must be an absolute HTTP or HTTPS URL"
+        )));
+    }
+    Ok(())
+}
 
 pub(crate) async fn get_login_carousel(
     State(state): State<Arc<AppState>>,

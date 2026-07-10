@@ -15,13 +15,14 @@ use axum::{
     response::Response,
 };
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tower_http::{
     cors::{AllowOrigin, Any, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 
+mod auth_settings;
 mod backup;
 mod cli;
 mod config;
@@ -68,11 +69,13 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&settings.upload_dir).await?;
     let pool = db::connect(&settings.database_url).await?;
     db::migrate(&pool).await?;
+    let auth_runtime = auth_settings::load(&pool, &settings).await?;
 
     let uploads = settings.upload_dir.clone();
     let state = Arc::new(AppState {
         pool,
         settings: settings.clone(),
+        auth_runtime: RwLock::new(auth_runtime),
         passkey_registrations: Mutex::new(HashMap::new()),
         passkey_authentications: Mutex::new(HashMap::new()),
         mcp_runtime: Mutex::new(crate::route_support::McpRuntime {

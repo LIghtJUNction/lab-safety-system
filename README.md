@@ -139,6 +139,10 @@ OAUTH_LOGIN_URL=https://idp.example.com/oauth/authorize
 FEDERATED_LOGIN_SECRET=必须替换为随机长密钥
 ```
 
+系统管理员也可以在前端进入 **系统管理 → 全局配置** 调整 SSO/OAuth 开关、身份网关登录 URL 和联邦登录密钥。环境变量仍是首次启动的默认值；一旦在界面保存，数据库中的 `federated_auth` 设置会在后续启动时覆盖这些认证环境默认值。联邦登录密钥不会通过 API 返回，也不会以明文写入数据库，而是使用由 `SECRET_KEY` 经 SHA-256 派生的密钥进行 XChaCha20-Poly1305 加密。密钥输入框留空表示保留现有值；清除密钥前必须先停用 SSO 和 OAuth。
+
+同一页面只读展示 App env、Token TTL、WebAuthn RP ID/Origin、CORS、MCP 状态及以下回调路径。除认证网关设置外，部署级配置仍需修改环境变量并重启服务。
+
 回调地址：
 
 - SSO：`https://你的域名/api/v1/auth/sso/callback`

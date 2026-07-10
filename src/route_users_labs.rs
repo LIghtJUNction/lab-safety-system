@@ -59,10 +59,11 @@ pub(crate) async fn create_user(
             "auth_provider must be password, sso, or oauth",
         ));
     }
+    let auth_runtime = state.auth_runtime.read().await;
     if auth_provider == "sso"
         && !configured_federated_login(
-            state.settings.sso_enabled,
-            state.settings.sso_login_url.as_deref(),
+            auth_runtime.sso_enabled,
+            auth_runtime.sso_login_url.as_deref(),
             "/api/v1/auth/sso/callback",
         )
     {
@@ -72,8 +73,8 @@ pub(crate) async fn create_user(
     }
     if auth_provider == "oauth"
         && !configured_federated_login(
-            state.settings.oauth_enabled,
-            state.settings.oauth_login_url.as_deref(),
+            auth_runtime.oauth_enabled,
+            auth_runtime.oauth_login_url.as_deref(),
             "/api/v1/auth/oauth/callback",
         )
     {
@@ -81,6 +82,7 @@ pub(crate) async fn create_user(
             "OAuth is not enabled for this deployment",
         ));
     }
+    drop(auth_runtime);
     if auth_provider == "password" && payload.password.is_none() {
         return Err(ApiError::bad_request("Password users require a password"));
     }
