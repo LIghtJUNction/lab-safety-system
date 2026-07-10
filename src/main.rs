@@ -10,9 +10,10 @@ use std::{
 use axum::{
     Router,
     extract::Request,
-    http::{HeaderValue, Method, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::Response,
+    routing::any,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, RwLock};
@@ -107,11 +108,20 @@ async fn main() -> anyhow::Result<()> {
 
 fn static_files_service(static_dir: PathBuf) -> Router {
     Router::new()
+        .route("/api/v1", any(not_found_route))
+        .route("/api/v1/", any(not_found_route))
+        .route("/api/v1/{*path}", any(not_found_route))
+        .route("/mcp", any(not_found_route))
+        .route("/mcp/", any(not_found_route))
+        .route("/mcp/{*path}", any(not_found_route))
         .fallback_service(
-            ServeDir::new(&static_dir)
-                .not_found_service(ServeFile::new(static_dir.join("index.html"))),
+            ServeDir::new(&static_dir).fallback(ServeFile::new(static_dir.join("index.html"))),
         )
         .layer(middleware::from_fn(set_static_cache_control))
+}
+
+async fn not_found_route() -> StatusCode {
+    StatusCode::NOT_FOUND
 }
 
 async fn set_static_cache_control(request: Request, next: Next) -> Response {
@@ -256,6 +266,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn system_config_spa_route_should_return_index_with_ok_status() {
+        let (_static_dir, app) = static_test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/system/config")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("SPA response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read body"),
+            "<main>spa-index</main>"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_api_route_should_remain_not_found_without_spa_index() {
+        let (_static_dir, app) = static_test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/not-found")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("API response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        assert!(!String::from_utf8_lossy(&body).contains("spa-index"));
+    }
+
+    #[tokio::test]
+    async fn unknown_mcp_route_should_remain_not_found_without_spa_index() {
+        let (_static_dir, app) = static_test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp/not-found")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("MCP response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        assert!(!String::from_utf8_lossy(&body).contains("spa-index"));
+    }
+
+    #[tokio::test]
+    async fn reserved_api_and_mcp_paths_should_return_not_found_for_common_methods() {
+        let (_static_dir, app) = static_test_app();
+        let paths = [
+            "/api/v1",
+            "/api/v1/",
+            "/api/v1/x",
+            "/mcp",
+            "/mcp/",
+            "/mcp/x",
+        ];
+        let methods = [
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ];
+
+        for path in paths {
+            for method in &methods {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method.clone())
+                            .uri(path)
+                            .body(Body::empty())
+                            .expect("request"),
+                    )
+                    .await
+                    .expect("reserved route response");
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+                let body = to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("read body");
+                assert!(
+                    !String::from_utf8_lossy(&body).contains("spa-index"),
+                    "{method} {path} returned SPA index"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn hashed_asset_should_use_immutable_cache_and_return_file() {
         let (cache_control, body) = static_response("/assets/app-hash.js").await;
 
@@ -264,6 +379,22 @@ mod tests {
             HeaderValue::from_static("public, max-age=31536000, immutable")
         );
         assert_eq!(body, "window.appHash = true;");
+    }
+
+    #[tokio::test]
+    async fn real_static_asset_should_keep_ok_status() {
+        let (_static_dir, app) = static_test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app-hash.js")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("asset response");
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
