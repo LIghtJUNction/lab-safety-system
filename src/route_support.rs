@@ -123,9 +123,10 @@ where
         if let Some(sqlx_error) = error_ref.downcast_ref::<sqlx::Error>() {
             return Self::from_sqlx(sqlx_error);
         }
+        tracing::error!(error = ?error, "internal operation failed");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: error.to_string(),
+            message: "An internal server error occurred".to_string(),
         }
     }
 }
