@@ -272,7 +272,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use std::collections::HashMap;
-    use tokio::sync::Mutex as TokioMutex;
+    use tokio::sync::{Mutex as TokioMutex, RwLock};
     use tower::ServiceExt;
 
     #[test]
@@ -320,6 +320,9 @@ mod tests {
         };
         let state = Arc::new(AppState {
             pool,
+            auth_runtime: RwLock::new(crate::auth_settings::AuthRuntimeSettings::from_settings(
+                &settings,
+            )),
             settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
@@ -368,6 +371,9 @@ mod tests {
         };
         let state = Arc::new(AppState {
             pool,
+            auth_runtime: RwLock::new(crate::auth_settings::AuthRuntimeSettings::from_settings(
+                &settings,
+            )),
             settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
@@ -418,6 +424,9 @@ mod tests {
         };
         let state = Arc::new(AppState {
             pool,
+            auth_runtime: RwLock::new(crate::auth_settings::AuthRuntimeSettings::from_settings(
+                &settings,
+            )),
             settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
@@ -473,6 +482,9 @@ mod tests {
         };
         let state = Arc::new(AppState {
             pool,
+            auth_runtime: RwLock::new(crate::auth_settings::AuthRuntimeSettings::from_settings(
+                &settings,
+            )),
             settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),
@@ -538,6 +550,9 @@ mod tests {
         };
         let state = Arc::new(AppState {
             pool,
+            auth_runtime: RwLock::new(crate::auth_settings::AuthRuntimeSettings::from_settings(
+                &settings,
+            )),
             settings,
             passkey_registrations: TokioMutex::new(HashMap::new()),
             passkey_authentications: TokioMutex::new(HashMap::new()),

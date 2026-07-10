@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.95"
 axum = { version = "0.8.1", features = ["multipart"] }
 base64 = "0.22.1"
+chacha20poly1305 = "0.11.0"
 chrono = { version = "0.4.39", features = ["serde"] }
 hmac = "0.12.1"
 pbkdf2 = "0.12.2"

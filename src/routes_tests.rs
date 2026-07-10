@@ -6,7 +6,7 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use sqlx::{Executor, PgPool, postgres::PgPoolOptions};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -20,9 +20,16 @@ pub(crate) struct TestApp {
     admin_id: i64,
     researcher_token: String,
     researcher_id: i64,
+    settings: Settings,
 }
 
 pub(crate) async fn test_app() -> anyhow::Result<Option<TestApp>> {
+    test_app_with_federated_secret(None).await
+}
+
+pub(crate) async fn test_app_with_federated_secret(
+    federated_login_secret: Option<&str>,
+) -> anyhow::Result<Option<TestApp>> {
     let Some(database_url) = std::env::var("TEST_DATABASE_URL")
         .ok()
         .or_else(|| std::env::var("DATABASE_URL").ok())
@@ -69,7 +76,7 @@ pub(crate) async fn test_app() -> anyhow::Result<Option<TestApp>> {
         oauth_enabled: false,
         sso_login_url: None,
         oauth_login_url: None,
-        federated_login_secret: None,
+        federated_login_secret: federated_login_secret.map(ToString::to_string),
         webauthn_rp_id: "localhost".to_string(),
         webauthn_origin: "http://localhost:5174".to_string(),
         cors_allowed_origins: vec![],
@@ -102,6 +109,9 @@ pub(crate) async fn test_app() -> anyhow::Result<Option<TestApp>> {
 
     let state = Arc::new(AppState {
         pool: pool.clone(),
+        auth_runtime: RwLock::new(crate::auth_settings::AuthRuntimeSettings::from_settings(
+            &settings,
+        )),
         settings,
         passkey_registrations: Mutex::new(HashMap::new()),
         passkey_authentications: Mutex::new(HashMap::new()),
@@ -131,6 +141,7 @@ pub(crate) async fn test_app() -> anyhow::Result<Option<TestApp>> {
         admin_id,
         researcher_token,
         researcher_id,
+        settings: state.settings.clone(),
     }))
 }
 
@@ -417,6 +428,8 @@ mod required_fields_flow;
 mod safety_flow;
 #[path = "routes_tests/safety_flow_assertions.rs"]
 mod safety_flow_assertions;
+#[path = "routes_tests/settings_flow.rs"]
+mod settings_flow;
 #[path = "routes_tests/upload_flow.rs"]
 mod upload_flow;
 #[path = "routes_tests/upload_url_flow.rs"]

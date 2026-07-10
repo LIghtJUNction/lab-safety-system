@@ -7,13 +7,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use webauthn_rs::prelude::{
     Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
     RegisterPublicKeyCredential,
 };
 
-use crate::config::Settings;
+use crate::{auth_settings::AuthRuntimeSettings, config::Settings};
 use serde_json::Value;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -25,6 +25,7 @@ pub(crate) struct McpRuntime {
 pub struct AppState {
     pub pool: PgPool,
     pub settings: Settings,
+    pub auth_runtime: RwLock<AuthRuntimeSettings>,
     pub passkey_registrations: Mutex<PasskeyRegistrationCache>,
     pub passkey_authentications: Mutex<PasskeyAuthenticationCache>,
     pub mcp_runtime: Mutex<McpRuntime>,
