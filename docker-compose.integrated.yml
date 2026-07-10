@@ -8,8 +8,7 @@ services:
       APP_HOST: ${APP_HOST:-0.0.0.0}
       APP_PORT: 8080
       DATABASE_URL: postgresql://${POSTGRES_USER:-lab_safety}:${POSTGRES_PASSWORD:-lab_safety_quickstart}@postgres:5432/${POSTGRES_DB:-lab_safety}
-      # >=32 chars, not a placeholder token — accepted by production Settings validation.
-      SECRET_KEY: ${SECRET_KEY:-lab-safety-quickstart-secret-key-min-32-chars}
+      SECRET_KEY: ${SECRET_KEY:-}
       TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-3600}
       STATIC_DIR: /app/public
       UPLOAD_DIR: /app/uploads
@@ -22,6 +21,7 @@ services:
       WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost:${APP_PORT:-8080}}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     volumes:
+      - app-config:/app/config
       - backend-uploads:/app/uploads
     ports:
       - "${APP_PORT:-8080}:8080"
@@ -42,8 +42,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-lab_safety}
       POSTGRES_USER: ${POSTGRES_USER:-lab_safety}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lab_safety_quickstart}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -54,5 +52,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  app-config:
   postgres-data:
   backend-uploads:

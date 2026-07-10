@@ -30,14 +30,16 @@ WORKDIR /app
 
 RUN groupadd --system app \
     && useradd --system --gid app --create-home app \
-    && mkdir -p /app/uploads /app/public \
-    && chown -R app:app /app/uploads /app/public \
+    && mkdir -p /app/config /app/uploads /app/public \
+    && chown -R app:app /app/config /app/uploads /app/public \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=backend-build /app/target/release/lab-safety-system /usr/local/bin/lab-safety-system
+COPY --from=backend-build /app/target/release/lab-safety-system /usr/local/bin/lab-safety-system.bin
 COPY --from=frontend-build /app/frontend/dist /app/public
+COPY --chmod=0755 docker-entrypoint.integrated.sh /usr/local/bin/docker-entrypoint.integrated.sh
+RUN ln -s docker-entrypoint.integrated.sh /usr/local/bin/lab-safety-system
 
 ENV APP_ENV=production
 ENV APP_HOST=0.0.0.0
@@ -52,4 +54,5 @@ USER app
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD /usr/local/bin/lab-safety-system --healthcheck
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.integrated.sh"]
 CMD ["lab-safety-system"]

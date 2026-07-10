@@ -31,7 +31,7 @@ docker --version
 docker compose version
 ```
 
-**零配置原则**：`docker-compose.integrated.yml` 内置可用默认值，**不强制 `.env`**。Windows / Linux 一键脚本只做：下载 compose → `up -d` → 等健康 → bootstrap 管理员。
+**零配置原则**：`docker-compose.integrated.yml` 内置可用默认值，**不强制 `.env`**。首次启动会生成随机 `SECRET_KEY` 并保存在专用 `app-config` 卷中，PostgreSQL 默认只在 Compose 内网开放。Windows / Linux 一键脚本只做：下载 compose → `up -d` → 等健康 → bootstrap 管理员。
 
 ## Windows（PowerShell，推荐）
 
@@ -72,7 +72,7 @@ docker compose -f docker-compose.integrated.yml exec -T app \
   lab-safety-system users bootstrap-super-admin --generate-password true
 ```
 
-可选：以后用 `.env` 覆盖 `POSTGRES_PASSWORD` / `SECRET_KEY` / `APP_PORT`（生产建议改默认密钥）。
+可选：以后用 `.env` 覆盖 `POSTGRES_PASSWORD` / `SECRET_KEY` / `APP_PORT`。未设置 `SECRET_KEY` 时会自动生成并持久化，无需手工配置。
 
 ## Arch Linux（AUR）
 

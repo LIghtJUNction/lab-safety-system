@@ -38,7 +38,7 @@ for _ in $(seq 1 45); do
       HEALTHY=true
       break
     fi
-    if curl -fsS "http://127.0.0.1:8080/api/v1/ready" >/dev/null 2>&1; then
+    if curl -fsS "http://127.0.0.1:${APP_PORT:-8080}/api/v1/ready" >/dev/null 2>&1; then
       HEALTHY=true
       break
     fi
@@ -61,7 +61,7 @@ docker compose -f "$COMPOSE_FILE" exec -T app \
 
 echo ""
 echo "=== Done ==="
-echo "Open:      http://localhost:8080"
+echo "Open:      http://localhost:${APP_PORT:-8080}"
 echo "Username:  admin"
 echo "Password:  see Generated password above (only shown on first create)"
 echo ""

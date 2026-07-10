@@ -29,7 +29,7 @@
 
 ## 快速部署（零配置）
 
-整合镜像：前端 + API 一个容器，PostgreSQL 另一个。**不需要手写 `.env`**，拉下来就能跑。
+整合镜像：前端 + API 一个容器，PostgreSQL 另一个。**不需要手写 `.env`**，拉下来就能跑。首次启动会生成随机 `SECRET_KEY` 并保存在专用持久卷中；PostgreSQL 默认只在 Compose 内网开放。
 
 ### Windows（PowerShell + Docker Desktop）
 
@@ -216,14 +216,15 @@ cargo test
 ```
 
 前端实机冒烟验证见 [`frontend/tests/e2e-smoke.mjs`](./frontend/tests/e2e-smoke.mjs)。在本机服务
-和测试管理员账号准备好后运行：
+和测试管理员账号准备好后运行。服务端必须设置 `SSO_ENABLED=true`、`OAUTH_ENABLED=true`，
+并确保 `FEDERATED_LOGIN_SECRET` 与测试使用的 `E2E_FEDERATED_SECRET` 相同：
 
 ```bash
 cd frontend
 E2E_BASE_URL=http://localhost:8080 \
 E2E_ADMIN_USER=cli_super \
 E2E_ADMIN_PASSWORD='替换为实际管理员密码' \
-E2E_FEDERATED_SECRET='与 FEDERATED_LOGIN_SECRET 一致' \
+E2E_FEDERATED_SECRET='federated-e2e-signing-key-2026-strong-9f3a1c7b' \
 npm run e2e:smoke
 ```
 
@@ -256,8 +257,9 @@ Docker Hub 发布依赖仓库 Secrets：
 
 ## 数据和上传文件
 
-Compose 会创建两个持久化卷：
+Compose 会创建三个持久化卷：
 
+- `app-config`：首次启动自动生成并持久化的应用密钥
 - `postgres-data`：PostgreSQL 数据
 - `backend-uploads`：法规附件、事故附件、隐患照片和整改照片
 
