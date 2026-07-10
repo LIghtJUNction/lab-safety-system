@@ -421,3 +421,5 @@ mod safety_flow_assertions;
 mod upload_flow;
 #[path = "routes_tests/upload_url_flow.rs"]
 mod upload_url_flow;
+#[path = "routes_tests/user_error_flow.rs"]
+mod user_error_flow;
