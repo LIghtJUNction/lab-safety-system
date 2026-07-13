@@ -20,10 +20,20 @@ pub struct UserCreate {
     pub username: String,
     pub display_name: String,
     pub email: String,
+    #[serde(default = "default_user_role")]
     pub role: String,
+    #[serde(default = "default_auth_provider")]
     pub auth_provider: String,
     pub department: Option<String>,
     pub password: Option<String>,
+}
+
+fn default_user_role() -> String {
+    "lab_member".to_string()
+}
+
+fn default_auth_provider() -> String {
+    "password".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,9 +71,14 @@ pub struct LabCreate {
     pub manager_user_id: Option<i64>,
     #[serde(default)]
     pub contact: Option<String>,
+    #[serde(default = "default_lab_status")]
     pub status: String,
     #[serde(default)]
     pub description: Option<String>,
+}
+
+fn default_lab_status() -> String {
+    "active".to_string()
 }
 
 #[derive(Debug, Deserialize)]
