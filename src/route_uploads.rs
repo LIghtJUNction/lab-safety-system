@@ -102,40 +102,37 @@ async fn save_upload(
     category: &str,
     policy: &UploadPolicy,
 ) -> Result<UploadedFile, ApiError> {
-    let mut upload = None;
     while let Some(field) = multipart.next_field().await? {
-        if field.file_name().is_some() {
-            upload = Some(field);
-            break;
+        if field.file_name().is_none() {
+            continue;
         }
+
+        let original_name = field.file_name().unwrap_or("upload.bin").to_string();
+        let content_type = field.content_type().map(ToString::to_string);
+        let bytes = field.bytes().await?;
+        validate_upload(&original_name, content_type.as_deref(), bytes.len(), policy)?;
+
+        let stored_name = format!(
+            "{}-{}",
+            Uuid::new_v4(),
+            Path::new(&original_name)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("upload.bin")
+        );
+        let target_dir = state.settings.upload_dir.join(category);
+        fs::create_dir_all(&target_dir).await?;
+        fs::write(target_dir.join(&stored_name), &bytes).await?;
+
+        return Ok(UploadedFile {
+            filename: original_name,
+            size: bytes.len(),
+            url: format!("/uploads/{category}/{stored_name}"),
+            content_type,
+        });
     }
-    let Some(field) = upload else {
-        return Err(ApiError::bad_request("file field is required"));
-    };
 
-    let original_name = field.file_name().unwrap_or("upload.bin").to_string();
-    let content_type = field.content_type().map(ToString::to_string);
-    let bytes = field.bytes().await?;
-    validate_upload(&original_name, content_type.as_deref(), bytes.len(), policy)?;
-
-    let stored_name = format!(
-        "{}-{}",
-        Uuid::new_v4(),
-        Path::new(&original_name)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("upload.bin")
-    );
-    let target_dir = state.settings.upload_dir.join(category);
-    fs::create_dir_all(&target_dir).await?;
-    fs::write(target_dir.join(&stored_name), &bytes).await?;
-
-    Ok(UploadedFile {
-        filename: original_name,
-        size: bytes.len(),
-        url: format!("/uploads/{category}/{stored_name}"),
-        content_type,
-    })
+    Err(ApiError::bad_request("file field is required"))
 }
 
 fn validate_upload(
