@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build x86_64 release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Checkout frontend submodule
+        run: git submodule update --init --depth=1 frontend
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Verify release version
+        id: version
+        shell: bash
+        run: |
+          version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "lab-safety-system") | .version')
+          test "$GITHUB_REF_NAME" = "v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build backend
+        run: cargo build --release --locked
+
+      - name: Create release archive
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          root="lab-safety-system-${VERSION}-x86_64"
+          archive="${root}.tar.zst"
+          install -Dm755 target/release/lab-safety-system "${root}/lab-safety-system"
+          cp -a frontend/dist "${root}/public"
+          install -Dm644 LICENSE "${root}/LICENSE"
+          tar --zstd -cf "$archive" "$root"
+          sha256sum "$archive" > "${archive}.sha256"
+          test "$("${root}/lab-safety-system" --version)" = "lab-safety-system ${VERSION}"
+          test -s "${root}/public/index.html"
+
+      - name: Create GitHub release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          archive="lab-safety-system-${VERSION}-x86_64.tar.zst"
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          fi
+          gh release upload "$GITHUB_REF_NAME" "$archive" "${archive}.sha256" --clobber
