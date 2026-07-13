@@ -171,6 +171,13 @@ const MIGRATIONS: &[&str] = &[
     )
     "#,
     r#"
+    alter table trainings
+    add column if not exists lab_id bigint references labs(id) on delete set null
+    "#,
+    r#"
+    create index if not exists idx_trainings_lab_id on trainings(lab_id)
+    "#,
+    r#"
     create table if not exists exam_results (
         id bigserial primary key,
         training_id bigint not null references trainings(id) on delete cascade,
@@ -246,6 +253,20 @@ const MIGRATIONS: &[&str] = &[
     "#,
     r#"
     create index if not exists idx_safety_hazards_lab_id on safety_hazards(lab_id)
+    "#,
+    r#"
+    create table if not exists hazard_status_events (
+        id bigserial primary key,
+        hazard_id bigint not null references safety_hazards(id) on delete cascade,
+        from_status text,
+        to_status text not null,
+        actor_user_id bigint references users(id) on delete set null,
+        created_at timestamptz not null default now()
+    )
+    "#,
+    r#"
+    create index if not exists idx_hazard_status_events_hazard_created
+    on hazard_status_events(hazard_id, created_at, id)
     "#,
     // Canonical create status is `open`. Migrate legacy default `reported` → `open`.
     r#"

@@ -418,18 +418,30 @@ async fn dispatch_lab_safety_action_direct_tests() {
     }
 }
 
+#[path = "routes_tests/analytics_consistency_flow.rs"]
+mod analytics_consistency_flow;
 #[path = "routes_tests/auth_provider_flow.rs"]
 mod auth_provider_flow;
+#[path = "routes_tests/concurrency_flow.rs"]
+mod concurrency_flow;
+#[path = "routes_tests/detail_access_flow.rs"]
+mod detail_access_flow;
+#[path = "routes_tests/hazard_history_flow.rs"]
+mod hazard_history_flow;
 #[path = "routes_tests/invitation_flow.rs"]
 mod invitation_flow;
 #[path = "routes_tests/required_fields_flow.rs"]
 mod required_fields_flow;
+#[path = "routes_tests/role_membership_flow.rs"]
+mod role_membership_flow;
 #[path = "routes_tests/safety_flow.rs"]
 mod safety_flow;
 #[path = "routes_tests/safety_flow_assertions.rs"]
 mod safety_flow_assertions;
 #[path = "routes_tests/settings_flow.rs"]
 mod settings_flow;
+#[path = "routes_tests/training_scope_flow.rs"]
+mod training_scope_flow;
 #[path = "routes_tests/upload_flow.rs"]
 mod upload_flow;
 #[path = "routes_tests/upload_url_flow.rs"]

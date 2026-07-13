@@ -265,6 +265,7 @@ async fn backend_safety_management_flow_is_enforced() -> anyhow::Result<()> {
         "/api/v1/trainings",
         Some(&ctx.admin_token),
         serde_json::json!({
+            "lab_id": lab["id"],
             "title": "化学品入门安全培训",
             "target_role": "lab_member",
             "status": "active",

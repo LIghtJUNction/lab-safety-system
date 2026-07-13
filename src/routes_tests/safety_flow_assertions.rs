@@ -102,18 +102,18 @@ pub(super) async fn verify_analytics_and_permissions(
     );
 
     for path in [
-        "/api/v1/regulations?q=危险化学品",
-        "/api/v1/incidents",
-        "/api/v1/trainings",
-        "/api/v1/equipment",
-        "/api/v1/equipment-bookings",
-        "/api/v1/repair-tickets",
-        "/api/v1/hazards",
+        "/api/v1/regulations?q=危险化学品".to_owned(),
+        "/api/v1/incidents".to_owned(),
+        format!("/api/v1/trainings?lab_id={}", lab["id"]),
+        "/api/v1/equipment".to_owned(),
+        "/api/v1/equipment-bookings".to_owned(),
+        "/api/v1/repair-tickets".to_owned(),
+        "/api/v1/hazards".to_owned(),
     ] {
         let (status, value) = request(
             &ctx.app,
             Method::GET,
-            path,
+            &path,
             Some(&ctx.researcher_token),
             Body::empty(),
             None,

@@ -39,7 +39,17 @@ pub(crate) async fn create_training(
     Json(payload): Json<TrainingCreate>,
 ) -> Result<Json<Training>, ApiError> {
     let actor = require_user(&state, &headers).await?;
-    require_admin(&actor)?;
+    let lab_exists =
+        sqlx::query_scalar::<_, bool>("select exists(select 1 from labs where id = $1)")
+            .bind(payload.lab_id)
+            .fetch_one(&state.pool)
+            .await?;
+    if !lab_exists {
+        return Err(ApiError::bad_request(
+            "lab_id must reference an existing lab",
+        ));
+    }
+    require_lab_manager(&state.pool, &actor, payload.lab_id).await?;
     ensure_allowed(
         &payload.target_role,
         &["lab_admin", "lab_member", "visitor"],
@@ -50,11 +60,12 @@ pub(crate) async fn create_training(
     Ok(Json(
         sqlx::query_as::<_, Training>(
             r#"
-        insert into trainings (title, target_role, status, starts_on, exam_required_score)
-        values ($1, $2, $3, $4, $5)
-        returning id, title, target_role, status, starts_on, exam_required_score, created_at
+        insert into trainings (lab_id, title, target_role, status, starts_on, exam_required_score)
+        values ($1, $2, $3, $4, $5, $6)
+        returning id, lab_id, title, target_role, status, starts_on, exam_required_score, created_at
         "#,
         )
+        .bind(payload.lab_id)
         .bind(payload.title)
         .bind(payload.target_role)
         .bind(payload.status)
@@ -70,11 +81,26 @@ pub(crate) async fn list_trainings(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<Training>>, ApiError> {
-    require_user(&state, &headers).await?;
+    let actor = require_user(&state, &headers).await?;
+    if let Some(lab_id) = query.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    } else if !is_system_admin(&actor) {
+        return Err(ApiError::forbidden(
+            "lab_id is required for non-system administrators",
+        ));
+    }
     let rows = sqlx::query_as::<_, Training>(
-        "select id, title, target_role, status, starts_on, exam_required_score, created_at from trainings where ($1::text is null or status = $1) order by created_at desc limit $2 offset $3",
+        r#"
+        select id, lab_id, title, target_role, status, starts_on, exam_required_score, created_at
+        from trainings
+        where ($1::text is null or status = $1)
+          and ($2::bigint is null or lab_id = $2)
+        order by created_at desc
+        limit $3 offset $4
+        "#,
     )
     .bind(query.status)
+    .bind(query.lab_id)
     .bind(limit(query.limit))
     .bind(offset(query.offset))
     .fetch_all(&state.pool)
@@ -90,12 +116,24 @@ pub(crate) async fn create_exam_result(
     let actor = require_user(&state, &headers).await?;
     ensure_self_or_admin(&actor, payload.user_id)?;
     ensure_score_range(payload.score, "score")?;
-    let required_score =
-        sqlx::query_scalar::<_, i32>("select exam_required_score from trainings where id = $1")
-            .bind(payload.training_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or_else(|| ApiError::bad_request("training not found"))?;
+    let (required_score, lab_id) = sqlx::query_as::<_, (i32, Option<i64>)>(
+        "select exam_required_score, lab_id from trainings where id = $1",
+    )
+    .bind(payload.training_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::bad_request("training not found"))?;
+    if let Some(lab_id) = lab_id {
+        require_lab_role(
+            &state.pool,
+            &actor,
+            lab_id,
+            &[ROLE_LAB_ADMIN, ROLE_LAB_MEMBER],
+        )
+        .await?;
+    } else {
+        require_admin(&actor)?;
+    }
     let status = if payload.score >= required_score {
         "passed"
     } else {
@@ -236,20 +274,25 @@ pub(crate) async fn create_booking(
             "Booking end time must be later than start time",
         ));
     }
+    let mut transaction = state.pool.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(payload.equipment_id)
+        .execute(&mut *transaction)
+        .await?;
     let conflict: Option<(i64,)> = sqlx::query_as(
         "select id from equipment_bookings where equipment_id = $1 and starts_at < $2 and ends_at > $3 limit 1",
     )
     .bind(payload.equipment_id)
     .bind(payload.ends_at)
     .bind(payload.starts_at)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *transaction)
     .await?;
     if conflict.is_some() {
         return Err(ApiError::conflict(
             "Equipment is already booked for the selected time range",
         ));
     }
-    Ok(Json(sqlx::query_as::<_, EquipmentBooking>(
+    let booking = sqlx::query_as::<_, EquipmentBooking>(
         "insert into equipment_bookings (equipment_id, user_id, starts_at, ends_at, purpose) values ($1, $2, $3, $4, $5) returning id, equipment_id, user_id, starts_at, ends_at, purpose, created_at",
     )
     .bind(payload.equipment_id)
@@ -257,8 +300,10 @@ pub(crate) async fn create_booking(
     .bind(payload.starts_at)
     .bind(payload.ends_at)
     .bind(payload.purpose)
-    .fetch_one(&state.pool)
-    .await?))
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(booking))
 }
 
 pub(crate) async fn list_bookings(

@@ -5,6 +5,17 @@ async fn operation_creates_require_explicit_business_fields() -> anyhow::Result<
     let Some(ctx) = test_app().await? else {
         return Ok(());
     };
+    let lab_id = sqlx::query_scalar::<_, i64>(
+        "insert into labs (code, name, status) values ($1, 'Required fields lab', 'active') returning id",
+    )
+    .bind(format!("REQUIRED-{}", ctx.schema))
+    .fetch_one(&ctx.pool)
+    .await?;
+    sqlx::query("insert into lab_users (lab_id, user_id, lab_role) values ($1, $2, 'lab_member')")
+        .bind(lab_id)
+        .bind(ctx.researcher_id)
+        .execute(&ctx.pool)
+        .await?;
 
     let (status, _) = json_request(
         &ctx.app,
@@ -26,6 +37,7 @@ async fn operation_creates_require_explicit_business_fields() -> anyhow::Result<
         "/api/v1/trainings",
         Some(&ctx.admin_token),
         serde_json::json!({
+            "lab_id": lab_id,
             "title": "Backend scored training",
             "target_role": "lab_member",
             "status": "active",

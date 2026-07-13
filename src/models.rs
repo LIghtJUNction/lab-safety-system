@@ -205,6 +205,7 @@ pub struct IncidentCaseCreate {
 #[derive(Debug, Serialize, FromRow)]
 pub struct Training {
     pub id: i64,
+    pub lab_id: Option<i64>,
     pub title: String,
     pub target_role: String,
     pub status: String,
@@ -215,6 +216,7 @@ pub struct Training {
 
 #[derive(Debug, Deserialize)]
 pub struct TrainingCreate {
+    pub lab_id: i64,
     pub title: String,
     pub target_role: String,
     pub status: String,
@@ -318,6 +320,16 @@ pub struct SafetyHazard {
     pub issue_photo_url: Option<String>,
     pub remediation_photo_url: Option<String>,
     pub remediation_note: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct HazardStatusEvent {
+    pub id: i64,
+    pub hazard_id: i64,
+    pub from_status: Option<String>,
+    pub to_status: String,
+    pub actor_user_id: Option<i64>,
     pub created_at: DateTime<Utc>,
 }
 

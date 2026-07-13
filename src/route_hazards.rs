@@ -18,6 +18,24 @@ use crate::{
     routes::require_user,
 };
 
+async fn require_hazard_read_access(
+    state: &AppState,
+    actor: &AuthUser,
+    hazard: &SafetyHazard,
+) -> Result<(), ApiError> {
+    if is_system_admin(actor)
+        || actor.id == hazard.reported_by
+        || Some(actor.id) == hazard.responsible_user_id
+    {
+        return Ok(());
+    }
+    if let Some(lab_id) = hazard.lab_id {
+        require_lab_access(&state.pool, actor, lab_id).await
+    } else {
+        Err(ApiError::forbidden("Hazard access required"))
+    }
+}
+
 pub(crate) async fn create_hazard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -44,7 +62,8 @@ pub(crate) async fn create_hazard(
         "issue_photo_url",
     )?;
     // New hazards always start as canonical `open` (not legacy `reported`).
-    Ok(Json(sqlx::query_as::<_, SafetyHazard>(
+    let mut transaction = state.pool.begin().await?;
+    let hazard = sqlx::query_as::<_, SafetyHazard>(
         r#"
         insert into safety_hazards (title, lab_id, lab_name, category, description, reported_by, issue_photo_url, status)
         values ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -59,8 +78,18 @@ pub(crate) async fn create_hazard(
     .bind(payload.reported_by)
     .bind(payload.issue_photo_url)
     .bind(HAZARD_STATUS_OPEN)
-    .fetch_one(&state.pool)
-    .await?))
+    .fetch_one(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "insert into hazard_status_events (hazard_id, from_status, to_status, actor_user_id) values ($1, null, $2, $3)",
+    )
+    .bind(hazard.id)
+    .bind(HAZARD_STATUS_OPEN)
+    .bind(actor.id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(hazard))
 }
 
 pub(crate) async fn list_hazards(
@@ -105,6 +134,63 @@ pub(crate) async fn list_hazards(
     Ok(Json(rows))
 }
 
+pub(crate) async fn get_hazard(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<SafetyHazard>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    let hazard = sqlx::query_as::<_, SafetyHazard>(
+        r#"
+        select id, lab_id, title, lab_name, category, description, status, reported_by,
+               responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note,
+               created_at
+        from safety_hazards
+        where id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Hazard not found"))?;
+    require_hazard_read_access(&state, &actor, &hazard).await?;
+    Ok(Json(hazard))
+}
+
+pub(crate) async fn list_hazard_history(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<Vec<HazardStatusEvent>>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    let hazard = sqlx::query_as::<_, SafetyHazard>(
+        r#"
+        select id, lab_id, title, lab_name, category, description, status, reported_by,
+               responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note,
+               created_at
+        from safety_hazards
+        where id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Hazard not found"))?;
+    require_hazard_read_access(&state, &actor, &hazard).await?;
+    let events = sqlx::query_as::<_, HazardStatusEvent>(
+        r#"
+        select id, hazard_id, from_status, to_status, actor_user_id, created_at
+        from hazard_status_events
+        where hazard_id = $1
+        order by created_at asc, id asc
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(events))
+}
+
 pub(crate) async fn claim_hazard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -131,7 +217,18 @@ pub(crate) async fn claim_hazard(
     } else {
         ensure_self_or_admin(&actor, payload.responsible_user_id)?;
     }
-    let row = sqlx::query_as::<_, SafetyHazard>(
+    let mut transaction = state.pool.begin().await?;
+    let current_status = sqlx::query_scalar::<_, String>(
+        "select status from safety_hazards where id = $1 for update",
+    )
+    .bind(id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Hazard not found"))?;
+    if normalize_hazard_status(&current_status) != HAZARD_STATUS_OPEN {
+        return Err(ApiError::conflict("Only open hazards can be claimed"));
+    }
+    let hazard = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards set responsible_user_id = $1, status = 'claimed', updated_at = now()
         where id = $2
@@ -140,10 +237,18 @@ pub(crate) async fn claim_hazard(
     )
     .bind(payload.responsible_user_id)
     .bind(id)
-    .fetch_optional(&state.pool)
+    .fetch_one(&mut *transaction)
     .await?;
-    row.map(Json)
-        .ok_or_else(|| ApiError::not_found("Hazard not found"))
+    sqlx::query(
+        "insert into hazard_status_events (hazard_id, from_status, to_status, actor_user_id) values ($1, $2, 'claimed', $3)",
+    )
+    .bind(id)
+    .bind(normalize_hazard_status(&current_status))
+    .bind(actor.id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(hazard))
 }
 
 pub(crate) async fn remediate_hazard(
@@ -176,24 +281,45 @@ pub(crate) async fn remediate_hazard(
         "/uploads/hazards/remediation/",
         "remediation_photo_url",
     )?;
-    let row = sqlx::query_as::<_, SafetyHazard>(
+    let mut transaction = state.pool.begin().await?;
+    let current_status = sqlx::query_scalar::<_, String>(
+        "select status from safety_hazards where id = $1 for update",
+    )
+    .bind(id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Hazard not found"))?;
+    if current_status != "claimed" {
+        return Err(ApiError::conflict(
+            "Only claimed hazards can submit remediation",
+        ));
+    }
+    let hazard = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards
         set remediation_photo_url = $1, remediation_note = $2, status = 'remediation_submitted', updated_at = now()
         where id = $3 and responsible_user_id is not null
-          and ($4::boolean or responsible_user_id = $5)
         returning id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
     .bind(payload.remediation_photo_url)
     .bind(payload.remediation_note)
     .bind(id)
-    .bind(is_admin(&actor))
-    .bind(actor.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *transaction)
     .await?;
-    row.map(Json)
-        .ok_or_else(|| ApiError::bad_request("Hazard must exist and be claimed before remediation"))
+    let hazard = hazard.ok_or_else(|| {
+        ApiError::bad_request("Hazard must exist and be claimed before remediation")
+    })?;
+    sqlx::query(
+        "insert into hazard_status_events (hazard_id, from_status, to_status, actor_user_id) values ($1, $2, 'remediation_submitted', $3)",
+    )
+    .bind(id)
+    .bind(current_status)
+    .bind(actor.id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(hazard))
 }
 
 pub(crate) async fn update_hazard_status(
@@ -211,18 +337,45 @@ pub(crate) async fn update_hazard_status(
     }
     validate_hazard_status(&payload.status)?;
     // Persist canonical form so legacy `reported` becomes `open`.
-    let status = normalize_hazard_status(&payload.status).to_string();
-    let row = sqlx::query_as::<_, SafetyHazard>(
+    let status = normalize_hazard_status(&payload.status).to_owned();
+    let mut transaction = state.pool.begin().await?;
+    let stored_status = sqlx::query_scalar::<_, String>(
+        "select status from safety_hazards where id = $1 for update",
+    )
+    .bind(id)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Hazard not found"))?;
+    let current_status = normalize_hazard_status(&stored_status);
+    let valid_transition = matches!(
+        (current_status, status.as_str()),
+        ("remediation_submitted", "closed") | ("closed", "remediation_submitted")
+    );
+    if !valid_transition {
+        return Err(ApiError::conflict(format!(
+            "Hazard cannot transition from {current_status} to {status}"
+        )));
+    }
+    let hazard = sqlx::query_as::<_, SafetyHazard>(
         r#"
         update safety_hazards set status = $1, updated_at = now()
         where id = $2
         returning id, lab_id, title, lab_name, category, description, status, reported_by, responsible_user_id, issue_photo_url, remediation_photo_url, remediation_note, created_at
         "#,
     )
-    .bind(status)
+    .bind(&status)
     .bind(id)
-    .fetch_optional(&state.pool)
+    .fetch_one(&mut *transaction)
     .await?;
-    row.map(Json)
-        .ok_or_else(|| ApiError::not_found("Hazard not found"))
+    sqlx::query(
+        "insert into hazard_status_events (hazard_id, from_status, to_status, actor_user_id) values ($1, $2, $3, $4)",
+    )
+    .bind(id)
+    .bind(current_status)
+    .bind(&status)
+    .bind(actor.id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(hazard))
 }

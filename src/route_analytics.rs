@@ -23,15 +23,49 @@ pub(crate) async fn dashboard_stats(
     if let Some(lab_id) = query.lab_id {
         require_lab_access(&state.pool, &actor, lab_id).await?;
     }
-    let total: i64 = sqlx::query("select count(*)::bigint as count from exam_results")
-        .fetch_one(&state.pool)
-        .await?
-        .get("count");
-    let passed: i64 =
-        sqlx::query("select count(*)::bigint as count from exam_results where status = 'passed'")
-            .fetch_one(&state.pool)
-            .await?
-            .get("count");
+    let exam_counts = sqlx::query(
+        r#"
+        select count(*)::bigint as total,
+               count(*) filter (where exam_results.status = 'passed')::bigint as passed
+        from exam_results
+        join trainings on trainings.id = exam_results.training_id
+        where (
+            $1::boolean
+            or exists(
+                select 1 from lab_users
+                where lab_users.lab_id = trainings.lab_id and lab_users.user_id = $2
+            )
+        )
+          and ($3::bigint is null or trainings.lab_id = $3)
+        "#,
+    )
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
+    .fetch_one(&state.pool)
+    .await?;
+    let total: i64 = exam_counts.get("total");
+    let passed: i64 = exam_counts.get("passed");
+    let training_count: i64 = sqlx::query(
+        r#"
+        select count(*)::bigint as count
+        from trainings
+        where (
+            $1::boolean
+            or exists(
+                select 1 from lab_users
+                where lab_users.lab_id = trainings.lab_id and lab_users.user_id = $2
+            )
+        )
+          and ($3::bigint is null or trainings.lab_id = $3)
+        "#,
+    )
+    .bind(is_system_admin(&actor))
+    .bind(actor.id)
+    .bind(query.lab_id)
+    .fetch_one(&state.pool)
+    .await?
+    .get("count");
     let incident_count: i64 = sqlx::query(
         r#"
         select count(*)::bigint as count
@@ -79,7 +113,7 @@ pub(crate) async fn dashboard_stats(
     Ok(Json(DashboardStats {
         regulation_count: table_count(&state.pool, "regulations").await?,
         incident_count,
-        training_count: table_count(&state.pool, "trainings").await?,
+        training_count,
         equipment_count,
         open_repair_count: open_repairs,
         exam_pass_rate: if total == 0 {

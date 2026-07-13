@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
 };
 
@@ -66,6 +66,26 @@ pub(crate) async fn list_regulations(
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))
+}
+
+pub(crate) async fn get_regulation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(regulation_id): Path<i64>,
+) -> Result<Json<Regulation>, ApiError> {
+    require_user(&state, &headers).await?;
+    let regulation = sqlx::query_as::<_, Regulation>(
+        r#"
+        select id, title, regulation_type, issuing_authority, effective_date, summary, file_url, created_at
+        from regulations
+        where id = $1
+        "#,
+    )
+    .bind(regulation_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Regulation not found"))?;
+    Ok(Json(regulation))
 }
 
 pub(crate) async fn create_incident(
@@ -138,4 +158,29 @@ pub(crate) async fn list_incidents(
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(rows))
+}
+
+pub(crate) async fn get_incident(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(incident_id): Path<i64>,
+) -> Result<Json<IncidentCase>, ApiError> {
+    let actor = require_user(&state, &headers).await?;
+    let incident = sqlx::query_as::<_, IncidentCase>(
+        r#"
+        select id, lab_id, title, lab_name, occurred_on, severity, category, root_cause, corrective_actions, file_url, created_at
+        from incident_cases
+        where id = $1
+        "#,
+    )
+    .bind(incident_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Incident not found"))?;
+    if let Some(lab_id) = incident.lab_id {
+        require_lab_access(&state.pool, &actor, lab_id).await?;
+    } else {
+        require_admin(&actor)?;
+    }
+    Ok(Json(incident))
 }
