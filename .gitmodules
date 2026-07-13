@@ -4,3 +4,6 @@
 [submodule "packaging/aur/lab-safety-system-git"]
 	path = packaging/aur/lab-safety-system-git
 	url = https://aur.archlinux.org/lab-safety-system-git.git
+[submodule "packaging/aur/lab-safety-system-bin"]
+	path = packaging/aur/lab-safety-system-bin
+	url = https://aur.archlinux.org/lab-safety-system-bin.git
