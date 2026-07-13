@@ -102,7 +102,14 @@ async fn save_upload(
     category: &str,
     policy: &UploadPolicy,
 ) -> Result<UploadedFile, ApiError> {
-    let Some(field) = multipart.next_field().await? else {
+    let mut upload = None;
+    while let Some(field) = multipart.next_field().await? {
+        if field.file_name().is_some() {
+            upload = Some(field);
+            break;
+        }
+    }
+    let Some(field) = upload else {
         return Err(ApiError::bad_request("file field is required"));
     };
 
@@ -153,21 +160,18 @@ fn validate_upload(
         return Err(ApiError::bad_request("Uploaded file type is not allowed"));
     }
 
-    let Some(content_type) = content_type else {
-        return Err(ApiError::bad_request(
-            "Uploaded file content type is required",
-        ));
-    };
-    let content_type = content_type
-        .split(';')
-        .next()
-        .unwrap_or(content_type)
-        .trim()
-        .to_ascii_lowercase();
-    if !policy.content_types.contains(&content_type.as_str()) {
-        return Err(ApiError::bad_request(
-            "Uploaded file content type is not allowed",
-        ));
+    if let Some(content_type) = content_type {
+        let content_type = content_type
+            .split(';')
+            .next()
+            .unwrap_or(content_type)
+            .trim()
+            .to_ascii_lowercase();
+        if !content_type.is_empty() && !policy.content_types.contains(&content_type.as_str()) {
+            return Err(ApiError::bad_request(
+                "Uploaded file content type is not allowed",
+            ));
+        }
     }
 
     Ok(())

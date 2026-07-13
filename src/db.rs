@@ -93,6 +93,47 @@ const MIGRATIONS: &[&str] = &[
     )
     "#,
     r#"
+    insert into regulations (title, regulation_type, issuing_authority, effective_date, summary, file_url)
+    select title, regulation_type, issuing_authority, effective_date, summary, file_url
+    from (values
+        (
+            '危险化学品安全管理条例',
+            'administrative_regulation',
+            '国务院',
+            date '2011-12-01',
+            '规范危险化学品生产、储存、使用、经营和运输安全管理，适合作为实验室危化品台账、采购、存储和应急处置制度的基础法规。',
+            null::text
+        ),
+        (
+            '中华人民共和国安全生产法',
+            'law',
+            '全国人民代表大会常务委员会',
+            date '2021-09-01',
+            '明确生产经营单位安全生产主体责任、从业人员安全权利义务、风险分级管控和隐患排查治理要求。',
+            null::text
+        ),
+        (
+            '实验室生物安全通用要求 GB 19489',
+            'national_standard',
+            '国家市场监督管理总局、国家标准化管理委员会',
+            date '2008-07-01',
+            '提供实验室生物安全管理体系、设施设备、人员防护、废弃物处置和应急管理的通用要求。',
+            null::text
+        ),
+        (
+            '高等学校实验室安全规范',
+            'industry_guideline',
+            '教育部',
+            date '2023-02-01',
+            '覆盖高校实验室安全责任体系、准入培训、危险源管理、检查整改和事故报告等管理要求。',
+            null::text
+        )
+    ) as seed(title, regulation_type, issuing_authority, effective_date, summary, file_url)
+    where not exists (
+        select 1 from regulations existing where existing.title = seed.title
+    )
+    "#,
+    r#"
     create table if not exists incident_cases (
         id bigserial primary key,
         title text not null,
