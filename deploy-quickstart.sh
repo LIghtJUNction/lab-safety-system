@@ -13,6 +13,9 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+docker compose version >/dev/null
+docker info >/dev/null
+
 if [ ! -f "$COMPOSE_FILE" ]; then
   echo "Downloading $COMPOSE_FILE ..."
   if command -v curl >/dev/null 2>&1; then
@@ -38,7 +41,9 @@ for _ in $(seq 1 45); do
       HEALTHY=true
       break
     fi
-    if curl -fsS "http://127.0.0.1:${APP_PORT:-8080}/api/v1/ready" >/dev/null 2>&1; then
+    # Check the selected container, not a possibly unrelated host port.
+    if [ "$STATUS" = "running" ] && docker compose -f "$COMPOSE_FILE" exec -T app \
+      lab-safety-system --healthcheck >/dev/null 2>&1; then
       HEALTHY=true
       break
     fi
@@ -47,22 +52,36 @@ for _ in $(seq 1 45); do
 done
 
 if [ "$HEALTHY" != "true" ]; then
-  echo "Warning: health wait timed out; compose status:" >&2
+  echo "Error: app did not become healthy; administrator bootstrap was not attempted." >&2
   docker compose -f "$COMPOSE_FILE" ps || true
+  echo "Check: docker compose -f $COMPOSE_FILE logs --tail=100 app postgres" >&2
+  exit 1
 fi
 
 echo "Bootstrapping system administrator (if missing)..."
-docker compose -f "$COMPOSE_FILE" exec -T app \
+if BOOTSTRAP_OUTPUT=$(docker compose -f "$COMPOSE_FILE" exec -T app \
   lab-safety-system users bootstrap-super-admin \
   --username admin \
   --generate-password true \
-  --email admin@example.local \
-  || echo "Admin already exists or bootstrap skipped."
+  --email admin@example.local 2>&1); then
+  printf '%s\n' "$BOOTSTRAP_OUTPUT"
+else
+  printf '%s\n' "$BOOTSTRAP_OUTPUT" >&2
+  case "$BOOTSTRAP_OUTPUT" in
+    *"System administrator already exists; use the existing system administrator for user management"*)
+      echo "Use the existing administrator account; its password has not been changed."
+      ;;
+    *)
+      echo "Error: administrator bootstrap failed. Deployment is not complete." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 echo ""
 echo "=== Done ==="
 echo "Open:      http://localhost:${APP_PORT:-8080}"
-echo "Username:  admin"
+echo "Account:   newly created admin, or your existing administrator"
 echo "Password:  see Generated password above (only shown on first create)"
 echo ""
 echo "Optional later: create a .env to override POSTGRES_PASSWORD / SECRET_KEY / APP_PORT"
