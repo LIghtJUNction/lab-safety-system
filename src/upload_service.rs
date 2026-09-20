@@ -67,8 +67,11 @@ mod tests {
         let directory = tempfile::tempdir().expect("upload directory");
         std::fs::create_dir_all(directory.path().join("backups")).expect("backup directory");
         std::fs::create_dir_all(directory.path().join("regulations")).expect("document directory");
-        std::fs::write(directory.path().join("backups/database.tar.gz"), "private-backup")
-            .expect("backup");
+        std::fs::write(
+            directory.path().join("backups/database.tar.gz"),
+            "private-backup",
+        )
+        .expect("backup");
         std::fs::write(directory.path().join("database.sql"), "private-database")
             .expect("database");
         let app = Router::new()
