@@ -242,11 +242,17 @@ mod tests {
         let (static_dir, static_app) = static_test_app();
         let upload_dir = tempfile::tempdir().expect("create upload temp dir");
         std::fs::create_dir(upload_dir.path().join("regulations")).expect("create category");
-        std::fs::write(upload_dir.path().join("regulations/probe.txt"), "upload-probe")
-            .expect("write upload probe");
+        std::fs::write(
+            upload_dir.path().join("regulations/probe.txt"),
+            "upload-probe",
+        )
+        .expect("write upload probe");
         let app = Router::new()
             .route("/api/probe", get(|| async { "api-probe" }))
-            .nest_service("/uploads", upload_service::public_uploads(upload_dir.path()))
+            .nest_service(
+                "/uploads",
+                upload_service::public_uploads(upload_dir.path()),
+            )
             .fallback_service(static_app);
         (static_dir, upload_dir, app)
     }
