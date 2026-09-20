@@ -36,12 +36,14 @@ check() {
   MOCK_HEALTH="$health" MOCK_BOOTSTRAP="$bootstrap" MOCK_CHECK_EXIT="$check_exit" \
     bash "$SCRIPT" > "$WORK/output" 2>&1 || status=$?
   if [ "$expected" = success ]; then
-    [ "$status" -eq 0 ] && grep -q '=== Done ===' "$WORK/output"
+    [ "$status" -eq 0 ]
+    grep -q '=== Done ===' "$WORK/output"
   else
-    [ "$status" -ne 0 ] && ! grep -q '=== Done ===' "$WORK/output"
+    [ "$status" -ne 0 ]
+    if grep -q '=== Done ===' "$WORK/output"; then exit 1; fi
   fi
   if [ "$health" = unhealthy ] || { [ "$health" = running ] && [ "$check_exit" -ne 0 ]; }; then
-    ! grep -q bootstrap-super-admin "$CALL_LOG"
+    if grep -q bootstrap-super-admin "$CALL_LOG"; then exit 1; fi
   fi
   echo "PASS: health=$health bootstrap=$bootstrap check=$check_exit expected=$expected"
 }
