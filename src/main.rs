@@ -43,6 +43,7 @@ mod route_uploads;
 mod route_users_labs;
 mod routes;
 mod security;
+mod upload_service;
 
 use config::Settings;
 use route_support::AppState;
@@ -85,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
         }),
     });
     let mut app = routes::router(state)
-        .nest_service("/uploads", ServeDir::new(uploads))
+        .nest_service("/uploads", upload_service::public_uploads(&uploads))
         .layer(cors_layer(&settings)?)
         .layer(TraceLayer::new_for_http());
 
@@ -240,11 +241,12 @@ mod tests {
     fn production_shape_test_app() -> (tempfile::TempDir, tempfile::TempDir, Router) {
         let (static_dir, static_app) = static_test_app();
         let upload_dir = tempfile::tempdir().expect("create upload temp dir");
-        std::fs::write(upload_dir.path().join("probe.txt"), "upload-probe")
+        std::fs::create_dir(upload_dir.path().join("regulations")).expect("create category");
+        std::fs::write(upload_dir.path().join("regulations/probe.txt"), "upload-probe")
             .expect("write upload probe");
         let app = Router::new()
             .route("/api/probe", get(|| async { "api-probe" }))
-            .nest_service("/uploads", ServeDir::new(upload_dir.path()))
+            .nest_service("/uploads", upload_service::public_uploads(upload_dir.path()))
             .fallback_service(static_app);
         (static_dir, upload_dir, app)
     }
@@ -433,7 +435,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/uploads/probe.txt")
+                    .uri("/uploads/regulations/probe.txt")
                     .body(Body::empty())
                     .expect("request"),
             )
